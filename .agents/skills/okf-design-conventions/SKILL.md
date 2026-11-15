@@ -124,6 +124,16 @@ snapshots).
   reads SKILL.md files only, so the split never changes the skill count
   (first applied: the paper-centric profile of kb-batch-discipline, PR #24).
 
+## 9. Reading Skill and Reference Files by Exact Path
+
+- When a task names skill or reference files (a skill's SKILL.md, its
+  `references/` files), read them by their exact paths inside the repository
+  being worked on. Do not search the filesystem for them: sibling worktrees
+  and stale clones can hold older versions of the same skill, and a search
+  may silently pick up the wrong copy.
+- If a named exact path does not exist, report that fact and continue with
+  the instructions at hand instead of hunting for the file elsewhere.
+
 ## Verification
 
 ```bash
