@@ -25,7 +25,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
 
-from okf_kb_agent.epo import RateLimiter, _atomic_write, _safe_name
+from okf_kb_agent._common import RateLimiter, _atomic_write, _safe_name
 from okf_kb_agent.wiki.model import GENRE_VALUES, KNOWN_SOURCE_KINDS, parse_source_entry
 
 # Exceptions
