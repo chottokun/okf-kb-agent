@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from ..epo import _safe_name
+from .._common import _safe_name
 from .model import load_concept
 from .synonyms import (
     DEFAULT_EXCLUDE_TAGS,

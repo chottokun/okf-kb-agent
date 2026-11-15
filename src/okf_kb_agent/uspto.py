@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from . import __version__
-from .epo import RateLimiter, _atomic_write, _safe_name
+from ._common import RateLimiter, _atomic_write, _safe_name
 from .uspto_bulk import BulkError
 
 API_ROOT = "https://api.uspto.gov"
