@@ -14,11 +14,9 @@ from typing import Any, Iterable
 from .._common import _safe_name
 from .model import load_concept
 from .synonyms import (
-    DEFAULT_EXCLUDE_TAGS,
     _load_existing_manual_groups,
     _load_existing_tier_a_tags,
     classify_tag_provenance,
-    classify_tag_tier,
 )
 
 
@@ -232,7 +230,6 @@ class CandidateChecker:
             if folded in self._concept_slug_by_norm:
                 return self._concept_slug_by_norm[folded], True
         return None, False
-        return None
 
     def check_candidate(
         self,

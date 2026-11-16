@@ -31,6 +31,7 @@ class CandidateCoreTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        (self.root / "concepts").mkdir(parents=True, exist_ok=True)
 
     def run_cli(self, *args):
         out, err = StringIO(), StringIO()
@@ -40,7 +41,6 @@ class CandidateCoreTests(unittest.TestCase):
         except SystemExit as exc:
             code = exc.code
         return code, out.getvalue(), err.getvalue()
-        (self.root / "concepts").mkdir(parents=True, exist_ok=True)
 
     def test_regression_seed_a_dielectric_fluid_spray_cooling(self):
         """Regression Seed (a): dielectric-fluid x spray-cooling.
@@ -478,6 +478,35 @@ class CandidateCoreTests(unittest.TestCase):
         v_check = check_verbatim_evidence(self.root, parsed[0]["cited_target"], parsed[0]["quoted_term"])
         self.assertTrue(v_check["verbatim_found"])
         self.assertEqual(v_check["parse_status"], "ok")
+
+    def test_human_output_shows_excluded_count_and_parse_failed(self):
+        """Human report shows excluded tag count and distinguishes parse_status=failed from taxonomy-gap."""
+        write_doc(
+            self.root,
+            "concepts/spray-cooling.md",
+            "type: Concept\ntitle: 'Spray Cooling'\ntags: [spray-cooling, cooling, dielectric-fluid]\n",
+            "# Spray Cooling\n",
+        )
+        (self.root / "synonyms.json").write_text("{}", encoding="utf-8")
+        prop_file = self.root / "proposal.md"
+        prop_file.write_text(
+            """### Candidate Proposal Pool
+1. **`unquoted-cand`** — 引用失敗候補 [`niche`]
+   - **(a) Adjacency**: Extends cooling.
+   - **(b) Primary-Source Emergence**: unquoted mention without citation target
+   - **(c) Deduplication**: distinct.
+2. **`gap-cand`** — ギャップ候補 [`niche`]
+   - **(a) Adjacency**: Extends cooling.
+   - **(b) Primary-Source Emergence**: taxonomy-gap
+   - **(c) Deduplication**: distinct.
+""",
+            encoding="utf-8",
+        )
+        code, out, _ = self.run_cli("candidate-check", self.root, "--proposal", str(prop_file))
+        self.assertEqual(code, 0)
+        self.assertIn("1 fixed vocabulary, 1 free, 1 excluded", out)
+        self.assertIn("verbatim: parse-failed", out)
+        self.assertIn("verbatim: taxonomy-gap", out)
 
 
 if __name__ == "__main__":

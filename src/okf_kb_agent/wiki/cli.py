@@ -967,7 +967,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                 f"Scanned: {sc.get('scanned_concept_files', 0)} concepts "
                 f"({sc.get('scanned_concept_tags_total', 0)} tags: "
                 f"{sc.get('scanned_fixed_vocabulary_tags', 0)} fixed vocabulary, "
-                f"{sc.get('scanned_free_tags', 0)} free), "
+                f"{sc.get('scanned_free_tags', 0)} free, "
+                f"{sc.get('scanned_excluded_tags', 0)} excluded), "
                 f"{sc.get('scanned_synonym_groups', 0)} synonym groups "
                 f"({sc.get('scanned_synonym_groups_manual', 0)} manual, "
                 f"{sc.get('scanned_synonym_groups_generated', 0)} generated)"
@@ -1008,7 +1009,9 @@ def _dispatch(args: argparse.Namespace) -> int:
 
                 if cand.verbatim_check:
                     vc = cand.verbatim_check
-                    if not vc.get("claimed_emergence", True):
+                    if vc.get("parse_status") == "failed":
+                        print(f"     - verbatim: parse-failed ({vc.get('snippet')})")
+                    elif not vc.get("claimed_emergence", True):
                         print("     - verbatim: taxonomy-gap (no emergence claimed)")
                     elif vc.get("verbatim_found"):
                         print(
