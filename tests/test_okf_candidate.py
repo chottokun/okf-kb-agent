@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 from okf_kb_agent.wiki.candidate import (
@@ -14,6 +16,7 @@ from okf_kb_agent.wiki.candidate import (
     check_verbatim_evidence,
     parse_proposal_candidates,
 )
+from okf_kb_agent.wiki.cli import main
 
 
 def write_doc(root: Path, rel: str, meta: str, body: str = "") -> Path:
@@ -28,6 +31,15 @@ class CandidateCoreTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+
+    def run_cli(self, *args):
+        out, err = StringIO(), StringIO()
+        try:
+            with redirect_stdout(out), redirect_stderr(err):
+                code = main([str(arg) for arg in args])
+        except SystemExit as exc:
+            code = exc.code
+        return code, out.getvalue(), err.getvalue()
         (self.root / "concepts").mkdir(parents=True, exist_ok=True)
 
     def test_regression_seed_a_dielectric_fluid_spray_cooling(self):
@@ -79,6 +91,7 @@ class CandidateCoreTests(unittest.TestCase):
                 "matched_term": "dielectric-fluid",
                 "group": ["spray-cooling", "dielectric-fluid"],
                 "owner": "spray-cooling",
+                "owner_resolved": True,
             },
         )
 
@@ -100,17 +113,36 @@ class CandidateCoreTests(unittest.TestCase):
     def test_regression_seed_b_missing_synonyms_json(self):
         """Regression Seed (b): missing synonyms.json fixture.
 
-        Checker reports missing input in inputs_status.
+        Checker reports missing input in inputs_status, tier_a_tags_key_present=False,
+        and scan_completeness tag counts close (fixed + free + excluded == total).
         """
+        write_doc(
+            self.root,
+            "concepts/spray-cooling.md",
+            "type: Concept\ntitle: 'Spray Cooling'\ntags: [spray-cooling, cooling, dielectric-fluid]\n",
+            "# Spray Cooling\n",
+        )
         checker = CandidateChecker(self.root)
         status = checker.check_inputs_status()
 
         self.assertFalse(status["synonyms_json_present"])
         self.assertIn("synonyms.json", status["inputs_missing"])
+        self.assertFalse(status["tier_a_tags_key_present"])
+        self.assertEqual(status["tier_a_tags_count"], 0)
+        self.assertIsNone(status.get("synonyms_json_parse_error"))
 
         result = checker.check_candidates(["interposer"])
         self.assertFalse(result.inputs_status["synonyms_json_present"])
         self.assertIn("synonyms.json", result.inputs_status["inputs_missing"])
+        self.assertFalse(result.inputs_status["tier_a_tags_key_present"])
+
+        sc = result.scan_completeness
+        self.assertIn("scanned_excluded_tags", sc)
+        self.assertEqual(
+            sc["scanned_fixed_vocabulary_tags"] + sc["scanned_free_tags"] + sc["scanned_excluded_tags"],
+            sc["scanned_concept_tags_total"],
+        )
+        self.assertEqual(sc["scanned_excluded_tags"], 1)  # 'cooling' is excluded
 
     def test_filename_and_synonym_relations(self):
         """Test name_occupied relation and manual synonym relation."""
@@ -241,11 +273,16 @@ class CandidateCoreTests(unittest.TestCase):
 
         for c in result.candidates:
             self.assertIsNotNone(c.verbatim_check)
-            self.assertTrue(c.verbatim_check["verbatim_found"])
             if c.slug == "near-junction-cooling":
                 self.assertFalse(c.verbatim_check["claimed_emergence"])
+                self.assertIsNone(c.verbatim_check["verbatim_found"])
+                self.assertIsNone(c.verbatim_check["artifact_exists"])
+                self.assertEqual(c.verbatim_check["parse_status"], "taxonomy-gap")
             else:
                 self.assertTrue(c.verbatim_check["claimed_emergence"])
+                self.assertTrue(c.verbatim_check["verbatim_found"])
+                self.assertTrue(c.verbatim_check["artifact_exists"])
+                self.assertEqual(c.verbatim_check["parse_status"], "ok")
                 self.assertGreaterEqual(c.verbatim_check["match_count"], 1)
 
     def test_verbatim_missing_file_or_term(self):
@@ -314,6 +351,133 @@ class CandidateCoreTests(unittest.TestCase):
         }
         self.assertEqual(tag_prov_by_concept.get("graphite-sheet"), "concept_slug")
         self.assertEqual(tag_prov_by_concept.get("graphene-film"), "concept_slug_other")
+
+    def test_seed_corrupt_synonyms_json_reported_in_inputs_status(self):
+        """Seed: corrupt synonyms.json is reported in inputs_status.synonyms_json_parse_error."""
+        (self.root / "synonyms.json").write_text("{invalid json", encoding="utf-8")
+        checker = CandidateChecker(self.root)
+        status = checker.check_inputs_status()
+
+        self.assertTrue(status["synonyms_json_present"])
+        self.assertIsNotNone(status.get("synonyms_json_parse_error"))
+        self.assertIn("Expecting property name", status["synonyms_json_parse_error"])
+        # default exit is 0
+        code, _, _ = self.run_cli("candidate-check", self.root, "interposer")
+        self.assertEqual(code, 0)
+        # --fail-on input-missing exits 1
+        code_fail, _, _ = self.run_cli(
+            "candidate-check", self.root, "interposer", "--fail-on", "input-missing"
+        )
+        self.assertEqual(code_fail, 1)
+
+    def test_seed_taxonomy_gap_fail_on_verbatim_cli_exits_zero(self):
+        """Seed: proposal with taxonomy-gap candidate exits 0 under --fail-on verbatim."""
+        (self.root / "synonyms.json").write_text("{}", encoding="utf-8")
+        proposal_text = """### Candidate Proposal Pool
+1. **`near-junction-cooling`** — ジャンクション近接冷却 [`niche`]
+   - **(a) Adjacency**: Extends heat sinks.
+   - **(b) Primary-Source Emergence**: taxonomy-gap
+   - **(c) Deduplication**: distinct.
+"""
+        prop_file = self.root / "proposal.md"
+        prop_file.write_text(proposal_text, encoding="utf-8")
+
+        code, out, _ = self.run_cli(
+            "candidate-check", self.root, "--proposal", str(prop_file), "--fail-on", "verbatim"
+        )
+        self.assertEqual(code, 0)
+
+        # Contrast: missing verbatim evidence fails with exit 1
+        bad_prop = """### Candidate Proposal Pool
+1. **`bad-candidate`** — 不正候補 [`niche`]
+   - **(a) Adjacency**: Extends heat sinks.
+   - **(b) Primary-Source Emergence**: "missing term" in nonexistent.txt
+   - **(c) Deduplication**: distinct.
+"""
+        bad_file = self.root / "bad_proposal.md"
+        bad_file.write_text(bad_prop, encoding="utf-8")
+        code_bad, _, _ = self.run_cli(
+            "candidate-check", self.root, "--proposal", str(bad_file), "--fail-on", "verbatim"
+        )
+        self.assertEqual(code_bad, 1)
+
+    def test_seed_die_attach_excluded_tag_on(self):
+        """Seed: candidate matching an excluded tag returns provenance='excluded' in tag_on."""
+        write_doc(
+            self.root,
+            "concepts/power-module.md",
+            "type: Concept\ntitle: 'Power Module'\ntags: [power-module, die-attach]\n",
+            "# Power Module\n",
+        )
+        (self.root / "synonyms.json").write_text("{}", encoding="utf-8")
+
+        checker = CandidateChecker(self.root)
+        result = checker.check_candidates(["die-attach"])
+        self.assertEqual(len(result.candidates), 1)
+        item = result.candidates[0]
+
+        self.assertEqual(len(item.relations.tag_on), 1)
+        tag_info = item.relations.tag_on[0]
+        self.assertEqual(tag_info["tag"], "die-attach")
+        self.assertEqual(tag_info["concept"], "power-module")
+        self.assertEqual(tag_info["provenance"], "excluded")
+
+        # --fail-on tag should trigger for excluded tags as well
+        code, _, _ = self.run_cli(
+            "candidate-check", self.root, "die-attach", "--fail-on", "tag"
+        )
+        self.assertEqual(code, 1)
+
+    def test_seed_unresolved_generated_owner_null_and_false(self):
+        """Seed: unresolved generated synonym group returns owner: null and owner_resolved: false."""
+        (self.root / "synonyms.json").write_text(
+            json.dumps({
+                "groups": [["unresolved-foo", "unresolved-bar"]],
+                "generated_groups": [["unresolved-foo", "unresolved-bar"]],
+                "manual_groups": [],
+            }),
+            encoding="utf-8",
+        )
+        checker = CandidateChecker(self.root)
+        result = checker.check_candidates(["unresolved-foo"])
+        item = result.candidates[0]
+        self.assertEqual(len(item.relations.synonyms), 1)
+        syn = item.relations.synonyms[0]
+        self.assertEqual(syn["kind"], "generated")
+        self.assertIsNone(syn["owner"])
+        self.assertFalse(syn["owner_resolved"])
+
+    def test_unparsed_concept_files_reported_in_inputs_status(self):
+        """Corrupt concept notes are reported in unparsed_concept_files."""
+        bad_note = self.root / "concepts" / "bad.md"
+        bad_note.parent.mkdir(parents=True, exist_ok=True)
+        bad_note.write_text("not yaml frontmatter at all and invalid format", encoding="utf-8")
+
+        checker = CandidateChecker(self.root)
+        status = checker.check_inputs_status()
+        self.assertIn("unparsed_concept_files", status)
+        self.assertIn("concepts/bad.md", status["unparsed_concept_files"])
+
+    def test_japanese_quotes_emergence_parsing(self):
+        """Japanese corner quotes 「」 are parsed for quoted_term."""
+        sv_dir = self.root / "data" / "external" / "source_verify"
+        sv_dir.mkdir(parents=True, exist_ok=True)
+        (sv_dir / "doc.txt").write_text("電子冷却技術の進展について述べる。\n", encoding="utf-8")
+
+        proposal_text = """### Candidate Proposal Pool
+1. **`cooling-tech`** — 冷却技術 [`established`]
+   - **(a) Adjacency**: Extends cooling.
+   - **(b) Primary-Source Emergence**: 「電子冷却技術」 in doc.txt
+   - **(c) Deduplication**: distinct.
+"""
+        parsed = parse_proposal_candidates(proposal_text)
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["quoted_term"], "電子冷却技術")
+        self.assertEqual(parsed[0]["cited_target"], "doc.txt")
+
+        v_check = check_verbatim_evidence(self.root, parsed[0]["cited_target"], parsed[0]["quoted_term"])
+        self.assertTrue(v_check["verbatim_found"])
+        self.assertEqual(v_check["parse_status"], "ok")
 
 
 if __name__ == "__main__":

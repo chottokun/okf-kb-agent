@@ -107,6 +107,7 @@ class CandidateChecker:
         # Load existing concept notes
         self._concepts: list[tuple[str, Path, list[str]]] = []
         self._concept_slug_by_norm: dict[str, str] = {}
+        self._unparsed_concept_files: list[str] = []
         if self.concepts_dir.exists():
             for p in sorted(self.concepts_dir.glob("*.md")):
                 if p.name == "index.md" or not p.is_file():
@@ -119,29 +120,45 @@ class CandidateChecker:
                     concept = load_concept(p, self.wiki_root)
                     self._concepts.append((stem, p, list(concept.tags)))
                 except Exception:
-                    # Fallback to empty tags if corrupt
                     self._concepts.append((stem, p, []))
+                    self._unparsed_concept_files.append(str(p.relative_to(self.wiki_root)))
 
         # Load synonyms
         self._manual_groups: list[list[str]] = []
         self._generated_groups: list[list[str]] = []
         self._tier_a_tags: list[str] = []
+        self._synonyms_json_parse_error: str | None = None
+        self._tier_a_tags_key_present: bool = False
+        self._tier_a_tags_count: int = 0
 
         if self.synonyms_path.exists():
             try:
-                self._manual_groups = _load_existing_manual_groups(self.synonyms_path)
-            except Exception:
-                pass
-            try:
-                self._generated_groups = _load_existing_generated_groups(self.synonyms_path)
-            except Exception:
-                pass
-            try:
-                loaded_tier_a = _load_existing_tier_a_tags(self.synonyms_path)
-                if loaded_tier_a is not None:
-                    self._tier_a_tags = loaded_tier_a
-            except Exception:
-                pass
+                raw_text = self.synonyms_path.read_text(encoding="utf-8")
+                syn_data = json.loads(raw_text)
+                if isinstance(syn_data, dict):
+                    if "tier_a_tags" in syn_data:
+                        self._tier_a_tags_key_present = True
+                        raw_tier_a = syn_data.get("tier_a_tags", [])
+                        if isinstance(raw_tier_a, list):
+                            self._tier_a_tags_count = len(raw_tier_a)
+            except Exception as exc:
+                self._synonyms_json_parse_error = str(exc)
+
+            if self._synonyms_json_parse_error is None:
+                try:
+                    self._manual_groups = _load_existing_manual_groups(self.synonyms_path)
+                except Exception:
+                    pass
+                try:
+                    self._generated_groups = _load_existing_generated_groups(self.synonyms_path)
+                except Exception:
+                    pass
+                try:
+                    loaded_tier_a = _load_existing_tier_a_tags(self.synonyms_path)
+                    if loaded_tier_a is not None:
+                        self._tier_a_tags = loaded_tier_a
+                except Exception:
+                    pass
 
     def check_inputs_status(self, proposal_path: str | Path | None = None) -> dict[str, Any]:
         """Check presence of required wiki files and caches."""
@@ -162,6 +179,10 @@ class CandidateChecker:
 
         return {
             "synonyms_json_present": syn_ok,
+            "synonyms_json_parse_error": self._synonyms_json_parse_error,
+            "tier_a_tags_key_present": self._tier_a_tags_key_present,
+            "tier_a_tags_count": self._tier_a_tags_count,
+            "unparsed_concept_files": list(self._unparsed_concept_files),
             "source_verify_cache_present": sv_present,
             "proposal_file_present": prop_present,
             "inputs_missing": missing,
@@ -172,19 +193,22 @@ class CandidateChecker:
         total_tags = sum(len(tags) for _, _, tags in self._concepts)
         fixed_count = 0
         free_count = 0
+        excluded_count = 0
         all_slugs = [slug for slug, _, _ in self._concepts]
         for slug, _, tags in self._concepts:
             for tag in tags:
-                tier = classify_tag_tier(
+                prov = classify_tag_provenance(
                     tag,
                     manual_groups=self._manual_groups,
                     tier_a_list=self._tier_a_tags,
                     concept_slug=slug,
                     all_concept_slugs=all_slugs,
                 )
-                if tier == "Tier A":
+                if prov == "excluded":
+                    excluded_count += 1
+                elif prov in ("concept_slug", "concept_slug_other", "tier_a_tags", "manual_group"):
                     fixed_count += 1
-                elif tier == "Tier B":
+                else:
                     free_count += 1
 
         total_syn_groups = len(self._manual_groups) + len(self._generated_groups)
@@ -196,18 +220,18 @@ class CandidateChecker:
             "scanned_synonym_groups_generated": len(self._generated_groups),
             "scanned_fixed_vocabulary_tags": fixed_count,
             "scanned_free_tags": free_count,
+            "scanned_excluded_tags": excluded_count,
         }
 
-    def _resolve_generated_owner(self, group: list[str]) -> str | None:
+    def _resolve_generated_owner(self, group: list[str]) -> tuple[str | None, bool]:
         for term in group:
             norm = term.strip().replace("-", " ").casefold()
             if norm in self._concept_slug_by_norm:
-                return self._concept_slug_by_norm[norm]
+                return self._concept_slug_by_norm[norm], True
             folded = term.strip().casefold()
             if folded in self._concept_slug_by_norm:
-                return self._concept_slug_by_norm[folded]
-        if group:
-            return group[0].strip().replace(" ", "-").lower()
+                return self._concept_slug_by_norm[folded], True
+        return None, False
         return None
 
     def check_candidate(
@@ -259,12 +283,13 @@ class CandidateChecker:
                 t_norm = term.strip().casefold()
                 t_spaced = t_norm.replace("-", " ")
                 if t_norm == norm_slug or t_spaced == norm_slug_spaced:
-                    owner = self._resolve_generated_owner(group)
+                    owner, owner_resolved = self._resolve_generated_owner(group)
                     relations.synonyms.append({
                         "kind": "generated",
                         "matched_term": term,
                         "group": list(group),
                         "owner": owner,
+                        "owner_resolved": owner_resolved,
                     })
                     break
 
@@ -275,16 +300,14 @@ class CandidateChecker:
                 tag_str = str(tag).strip()
                 tag_norm = tag_str.casefold()
                 tag_spaced = tag_norm.replace("-", " ")
-                provenance = classify_tag_provenance(
-                    tag_str,
-                    concept_slug=c_slug,
-                    all_concept_slugs=all_slugs,
-                    manual_groups=self._manual_groups,
-                    tier_a_list=self._tier_a_tags,
-                )
-                if provenance == "excluded":
-                    continue
                 if tag_norm == norm_slug or tag_spaced == norm_slug_spaced:
+                    provenance = classify_tag_provenance(
+                        tag_str,
+                        concept_slug=c_slug,
+                        all_concept_slugs=all_slugs,
+                        manual_groups=self._manual_groups,
+                        tier_a_list=self._tier_a_tags,
+                    )
                     relations.tag_on.append({
                         "tag": tag_str,
                         "concept": c_slug,
@@ -327,7 +350,7 @@ class CandidateChecker:
                 elif syn.get("kind") == "generated":
                     synonym_generated_count += 1
             tag_relation_count += len(item.relations.tag_on)
-            if item.verbatim_check and not item.verbatim_check.get("verbatim_found", True):
+            if item.verbatim_check and item.verbatim_check.get("verbatim_found") is False:
                 verbatim_miss_count += 1
 
         summary = {
@@ -400,7 +423,7 @@ class CandidateChecker:
                 elif syn.get("kind") == "generated":
                     synonym_generated_count += 1
             tag_relation_count += len(item.relations.tag_on)
-            if item.verbatim_check and not item.verbatim_check.get("verbatim_found", True):
+            if item.verbatim_check and item.verbatim_check.get("verbatim_found") is False:
                 verbatim_miss_count += 1
 
         summary = {
@@ -451,7 +474,7 @@ def parse_proposal_candidates(markdown_text: str) -> list[dict[str, Any]]:
                     current_candidate["quoted_term"] = ""
                     current_candidate["cited_target"] = "taxonomy-gap"
                 else:
-                    quote_m = re.search(r'["“\']([^"”\']+)["”\']', b_line)
+                    quote_m = re.search(r'["“\'「]([^"”\'」]+)["”\'」]', b_line)
                     in_m = re.search(r'\bin\s+([^\s\(\)]+)', b_line)
                     current_candidate["quoted_term"] = (
                         quote_m.group(1).strip() if quote_m else ""
@@ -502,16 +525,30 @@ def check_verbatim_evidence(
     root_path = Path(wiki_root).resolve()
     clean_target = citation_target.strip("`<>").strip()
 
-    if not clean_target or clean_target.lower() == "taxonomy-gap" or not quoted_term:
+    if clean_target.lower() == "taxonomy-gap":
         return {
             "claimed_emergence": False,
-            "cited_target": clean_target or "taxonomy-gap",
+            "cited_target": "taxonomy-gap",
             "resolved_artifact_path": None,
-            "artifact_exists": True,
+            "artifact_exists": None,
             "quoted_term": quoted_term or "",
-            "verbatim_found": True,
+            "verbatim_found": None,
             "match_count": 0,
             "snippet": "taxonomy-gap (no primary-source emergence claimed)",
+            "parse_status": "taxonomy-gap",
+        }
+
+    if not clean_target or not quoted_term:
+        return {
+            "claimed_emergence": False,
+            "cited_target": clean_target or "",
+            "resolved_artifact_path": None,
+            "artifact_exists": None,
+            "quoted_term": quoted_term or "",
+            "verbatim_found": None,
+            "match_count": 0,
+            "snippet": "failed to parse emergence citation or quoted term",
+            "parse_status": "failed",
         }
 
     sv_dir = root_path / "data" / "external" / "source_verify"
@@ -557,6 +594,7 @@ def check_verbatim_evidence(
             "verbatim_found": False,
             "match_count": 0,
             "snippet": f"artifact not found for citation target: {clean_target}",
+            "parse_status": "ok",
         }
 
     rel_path = str(resolved_file.relative_to(root_path))
@@ -572,6 +610,7 @@ def check_verbatim_evidence(
             "verbatim_found": False,
             "match_count": 0,
             "snippet": f"failed to read artifact: {exc}",
+            "parse_status": "ok",
         }
 
     norm_content = " ".join(content.split()).casefold()
@@ -597,4 +636,5 @@ def check_verbatim_evidence(
         "verbatim_found": verbatim_found,
         "match_count": match_count,
         "snippet": snippet,
+        "parse_status": "ok",
     }
