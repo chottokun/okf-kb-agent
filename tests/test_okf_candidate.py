@@ -319,6 +319,7 @@ class CandidateCoreTests(unittest.TestCase):
         content = "\n".join(lines)
         self.assertIn("candidate-check", content)
         self.assertIn("Relations:", content)
+        self.assertNotIn("Tag collisions", content)
 
     def test_seed2_graphite_sheet_on_graphene_film_concept_slug_other(self):
         """Seed 2: Tag matching another existing concept slug is classified as concept_slug_other."""
