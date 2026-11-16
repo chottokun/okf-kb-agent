@@ -283,6 +283,38 @@ class CandidateCoreTests(unittest.TestCase):
         self.assertIn("candidate-check", content)
         self.assertIn("Relations:", content)
 
+    def test_seed2_graphite_sheet_on_graphene_film_concept_slug_other(self):
+        """Seed 2: Tag matching another existing concept slug is classified as concept_slug_other."""
+        write_doc(
+            self.root,
+            "concepts/graphite-sheet.md",
+            "type: Concept\ntitle: 'Graphite Sheet'\ntags: [graphite-sheet]\n",
+            "# Graphite Sheet\n",
+        )
+        write_doc(
+            self.root,
+            "concepts/graphene-film.md",
+            "type: Concept\ntitle: 'Graphene Film'\ntags: [graphene-film, graphite-sheet]\n",
+            "# Graphene Film\n",
+        )
+        (self.root / "synonyms.json").write_text(
+            json.dumps({"groups": [], "generated_groups": [], "manual_groups": []}),
+            encoding="utf-8",
+        )
+
+        checker = CandidateChecker(self.root)
+        result = checker.check_candidates(["graphite-sheet"])
+        self.assertEqual(len(result.candidates), 1)
+        item = result.candidates[0]
+
+        # Tag on graphene-film should have provenance "concept_slug_other"
+        # Tag on graphite-sheet should have provenance "concept_slug"
+        tag_prov_by_concept = {
+            t["concept"]: t["provenance"] for t in item.relations.tag_on
+        }
+        self.assertEqual(tag_prov_by_concept.get("graphite-sheet"), "concept_slug")
+        self.assertEqual(tag_prov_by_concept.get("graphene-film"), "concept_slug_other")
+
 
 if __name__ == "__main__":
     unittest.main()

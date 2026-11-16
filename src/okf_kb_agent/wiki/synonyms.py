@@ -25,6 +25,7 @@ __all__ = [
     "DEFAULT_EXCLUDE_TAGS",
     "ExpandedSearchBackend",
     "SynonymIndex",
+    "classify_tag_provenance",
     "classify_tag_tier",
     "evaluate_synonyms",
     "extract_concept_synonym_groups",
@@ -638,36 +639,105 @@ def sync_synonyms(
     }
 
 
+def _normalize_tag(tag: str) -> str:
+    """Normalize tag for equivalence: strip, casefold, and treat hyphens and spaces identically."""
+    return re.sub(r"[\s\-]+", " ", tag.strip()).casefold()
+
+
+def classify_tag_provenance(
+    tag: str,
+    *,
+    concept_slug: str | None = None,
+    all_concept_slugs: Iterable[str] | None = None,
+    other_concept_slugs: Iterable[str] | None = None,
+    tier_a_list: Iterable[str] | None = None,
+    manual_groups: Iterable[Iterable[str]] | None = None,
+    exclude_tags: Iterable[str] | None = None,
+) -> str:
+    """Classify a tag's provenance into one of 6 values using deterministic precedence:
+
+    1. excluded: DEFAULT_EXCLUDE_TAGS union exclude_tags (additive)
+    2. concept_slug: norm(tag) == norm(concept_slug)
+    3. concept_slug_other: norm(tag) in other existing concept slugs
+    4. tier_a_tags: norm(tag) in tier_a_tags
+    5. manual_group: norm(tag) in any manual group
+    6. free: none of the above
+    """
+    norm = _normalize_tag(tag)
+
+    # 1. excluded (additive)
+    excludes: set[str] = set(DEFAULT_EXCLUDE_TAGS)
+    if exclude_tags is not None:
+        excludes.update(x for x in exclude_tags if isinstance(x, str))
+    excludes_norm = {_normalize_tag(x) for x in excludes}
+    if norm in excludes_norm:
+        return "excluded"
+
+    # 2. concept_slug
+    norm_concept_slug = _normalize_tag(concept_slug) if concept_slug is not None else None
+    if norm_concept_slug is not None and norm == norm_concept_slug:
+        return "concept_slug"
+
+    # 3. concept_slug_other
+    other_slugs: set[str] = set()
+    if other_concept_slugs is not None:
+        other_slugs.update(_normalize_tag(s) for s in other_concept_slugs if isinstance(s, str))
+    if all_concept_slugs is not None:
+        for s in all_concept_slugs:
+            if isinstance(s, str):
+                s_norm = _normalize_tag(s)
+                if norm_concept_slug is None or s_norm != norm_concept_slug:
+                    other_slugs.add(s_norm)
+    if norm in other_slugs:
+        return "concept_slug_other"
+
+    # 4. tier_a_tags
+    if tier_a_list is not None:
+        tier_a_norm = {
+            _normalize_tag(x) for x in tier_a_list if isinstance(x, str)
+        }
+        if norm in tier_a_norm:
+            return "tier_a_tags"
+
+    # 5. manual_group
+    if manual_groups is not None:
+        manual_norm = {
+            _normalize_tag(x)
+            for grp in manual_groups
+            for x in grp
+            if isinstance(x, str)
+        }
+        if norm in manual_norm:
+            return "manual_group"
+
+    # 6. free
+    return "free"
+
+
 def classify_tag_tier(
     tag: str,
     *,
     manual_groups: Iterable[Iterable[str]] | None = None,
     tier_a_list: Iterable[str] | None = None,
     concept_slug: str | None = None,
+    all_concept_slugs: Iterable[str] | None = None,
+    other_concept_slugs: Iterable[str] | None = None,
     exclude_tags: Iterable[str] | None = None,
 ) -> str | None:
     """Classify a tag into None (Tier 外 / excluded), 'Tier A', or 'Tier B'."""
-    norm = tag.strip().casefold()
-    excludes = frozenset(
-        x.casefold() for x in (exclude_tags if exclude_tags is not None else DEFAULT_EXCLUDE_TAGS)
+    prov = classify_tag_provenance(
+        tag,
+        concept_slug=concept_slug,
+        all_concept_slugs=all_concept_slugs,
+        other_concept_slugs=other_concept_slugs,
+        tier_a_list=tier_a_list,
+        manual_groups=manual_groups,
+        exclude_tags=exclude_tags,
     )
-    if norm in excludes:
+    if prov == "excluded":
         return None
-    if concept_slug is not None and norm == concept_slug.strip().casefold():
+    if prov in ("concept_slug", "concept_slug_other", "tier_a_tags", "manual_group"):
         return "Tier A"
-    if tier_a_list is not None:
-        tier_a_cf = {x.strip().casefold() for x in tier_a_list if isinstance(x, str)}
-        if norm in tier_a_cf:
-            return "Tier A"
-    if manual_groups is not None:
-        manual_cf = {
-            x.strip().casefold()
-            for grp in manual_groups
-            for x in grp
-            if isinstance(x, str)
-        }
-        if norm in manual_cf:
-            return "Tier A"
     return "Tier B"
 
 
@@ -695,11 +765,16 @@ def inventory_wiki_tags(
         if p.name != "index.md" and p.is_file()
     ) if concepts_dir.exists() else []
 
+    all_slugs = [p.stem for p in concept_files]
+
     tag_frequencies: dict[str, int] = defaultdict(int)
-    tags_by_tier: dict[str, set[str]] = {
-        "Tier A": set(),
-        "Tier B": set(),
-        "Tier 外": set(),
+    tags_by_provenance: dict[str, set[str]] = {
+        "excluded": set(),
+        "concept_slug": set(),
+        "concept_slug_other": set(),
+        "tier_a_tags": set(),
+        "manual_group": set(),
+        "free": set(),
     }
     total_tags = 0
 
@@ -716,31 +791,44 @@ def inventory_wiki_tags(
                 continue
             total_tags += 1
             tag_frequencies[tag] += 1
-            tier = classify_tag_tier(
+            prov = classify_tag_provenance(
                 tag,
+                concept_slug=slug,
+                all_concept_slugs=all_slugs,
                 manual_groups=manual_groups,
                 tier_a_list=tier_a_tags,
-                concept_slug=slug,
                 exclude_tags=exclude_tags,
             )
-            if tier is None:
-                tags_by_tier["Tier 外"].add(tag)
-            else:
-                tags_by_tier[tier].add(tag)
+            tags_by_provenance[prov].add(tag)
+
+    tier_a_set = (
+        tags_by_provenance["concept_slug"]
+        | tags_by_provenance["concept_slug_other"]
+        | tags_by_provenance["tier_a_tags"]
+        | tags_by_provenance["manual_group"]
+    )
+    tier_b_set = tags_by_provenance["free"] - tier_a_set
+    tier_out_set = tags_by_provenance["excluded"]
 
     return {
         "total_concepts": len(concept_files),
         "total_tags": total_tags,
         "unique_tags": len(tag_frequencies),
         "tag_frequencies": dict(tag_frequencies),
+        "provenance_counts": {
+            k: len(tags_by_provenance[k]) for k in tags_by_provenance
+        },
+        "tags_by_provenance": {
+            k: sorted(tags_by_provenance[k]) for k in tags_by_provenance
+        },
         "tier_counts": {
-            "Tier A": len(tags_by_tier["Tier A"]),
-            "Tier B": len(tags_by_tier["Tier B"]),
-            "Tier 外": len(tags_by_tier["Tier 外"]),
+            "Tier A": len(tier_a_set),
+            "Tier B": len(tier_b_set),
+            "Tier 外": len(tier_out_set),
         },
         "tags_by_tier": {
-            "Tier A": sorted(tags_by_tier["Tier A"]),
-            "Tier B": sorted(tags_by_tier["Tier B"]),
-            "Tier 外": sorted(tags_by_tier["Tier 外"]),
+            "Tier A": sorted(tier_a_set),
+            "Tier B": sorted(tier_b_set),
+            "Tier 外": sorted(tier_out_set),
         },
     }
