@@ -17,6 +17,7 @@ from .synonyms import (
     DEFAULT_EXCLUDE_TAGS,
     _load_existing_manual_groups,
     _load_existing_tier_a_tags,
+    classify_tag_provenance,
     classify_tag_tier,
 )
 
@@ -171,6 +172,7 @@ class CandidateChecker:
         total_tags = sum(len(tags) for _, _, tags in self._concepts)
         fixed_count = 0
         free_count = 0
+        all_slugs = [slug for slug, _, _ in self._concepts]
         for slug, _, tags in self._concepts:
             for tag in tags:
                 tier = classify_tag_tier(
@@ -178,6 +180,7 @@ class CandidateChecker:
                     manual_groups=self._manual_groups,
                     tier_a_list=self._tier_a_tags,
                     concept_slug=slug,
+                    all_concept_slugs=all_slugs,
                 )
                 if tier == "Tier A":
                     fixed_count += 1
@@ -194,25 +197,6 @@ class CandidateChecker:
             "scanned_fixed_vocabulary_tags": fixed_count,
             "scanned_free_tags": free_count,
         }
-
-    def _classify_tag_provenance(self, tag: str, concept_slug: str) -> str:
-        norm = tag.strip().casefold()
-        if concept_slug and norm == concept_slug.strip().casefold():
-            return "concept_slug"
-        if self._tier_a_tags:
-            tier_a_cf = {x.strip().casefold() for x in self._tier_a_tags if isinstance(x, str)}
-            if norm in tier_a_cf:
-                return "tier_a_tags"
-        if self._manual_groups:
-            manual_cf = {
-                x.strip().casefold()
-                for grp in self._manual_groups
-                for x in grp
-                if isinstance(x, str)
-            }
-            if norm in manual_cf:
-                return "manual_group"
-        return "free"
 
     def _resolve_generated_owner(self, group: list[str]) -> str | None:
         for term in group:
@@ -285,15 +269,22 @@ class CandidateChecker:
                     break
 
         # 3. Tag relations
+        all_slugs = [c[0] for c in self._concepts]
         for c_slug, c_path, tags in self._concepts:
             for tag in tags:
                 tag_str = str(tag).strip()
                 tag_norm = tag_str.casefold()
                 tag_spaced = tag_norm.replace("-", " ")
-                if tag_norm in DEFAULT_EXCLUDE_TAGS:
+                provenance = classify_tag_provenance(
+                    tag_str,
+                    concept_slug=c_slug,
+                    all_concept_slugs=all_slugs,
+                    manual_groups=self._manual_groups,
+                    tier_a_list=self._tier_a_tags,
+                )
+                if provenance == "excluded":
                     continue
                 if tag_norm == norm_slug or tag_spaced == norm_slug_spaced:
-                    provenance = self._classify_tag_provenance(tag_str, c_slug)
                     relations.tag_on.append({
                         "tag": tag_str,
                         "concept": c_slug,

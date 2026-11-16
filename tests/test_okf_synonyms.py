@@ -11,6 +11,7 @@ from okf_kb_agent.wiki.synonyms import (
     DEFAULT_EXCLUDE_TAGS,
     ExpandedSearchBackend,
     SynonymIndex,
+    classify_tag_provenance,
     classify_tag_tier,
     evaluate_synonyms,
     extract_concept_synonym_groups,
@@ -392,6 +393,138 @@ class SynonymSyncTests(unittest.TestCase):
         self.assertIn("cooling", inv["tags_by_tier"]["Tier 外"])
         self.assertEqual(inv["tier_counts"]["Tier B"], 1)
         self.assertEqual(inv["tag_frequencies"]["dielectric-fluid"], 1)
+
+    def test_exclude_tags_additive_union_preserves_cooling(self):
+        """Seed 4: exclude_tags=['foo'] adds to DEFAULT_EXCLUDE_TAGS without replacing them."""
+        # 'cooling' is in DEFAULT_EXCLUDE_TAGS, 'custom-exclude' is custom
+        self.assertIsNone(classify_tag_tier("cooling", exclude_tags=["custom-exclude"]))
+        self.assertIsNone(classify_tag_tier("custom-exclude", exclude_tags=["custom-exclude"]))
+        self.assertEqual(
+            classify_tag_provenance("cooling", exclude_tags=["custom-exclude"]),
+            "excluded",
+        )
+        self.assertEqual(
+            classify_tag_provenance("custom-exclude", exclude_tags=["custom-exclude"]),
+            "excluded",
+        )
+
+    def test_classify_tag_provenance_rules_and_normalization(self):
+        """Verify 6 provenance values, deterministic precedence, and hyphen/space normalization."""
+        # 1. excluded
+        self.assertEqual(classify_tag_provenance("cooling"), "excluded")
+        self.assertEqual(classify_tag_provenance("liquid-cooling"), "excluded")
+        self.assertEqual(classify_tag_provenance("liquid cooling"), "excluded")
+
+        # 2. concept_slug
+        self.assertEqual(
+            classify_tag_provenance("spray-cooling", concept_slug="spray-cooling"),
+            "concept_slug",
+        )
+        self.assertEqual(
+            classify_tag_provenance("spray cooling", concept_slug="spray-cooling"),
+            "concept_slug",
+        )
+
+        # 3. concept_slug_other
+        self.assertEqual(
+            classify_tag_provenance(
+                "graphite-sheet",
+                concept_slug="graphene-film",
+                all_concept_slugs=["graphene-film", "graphite-sheet"],
+            ),
+            "concept_slug_other",
+        )
+        self.assertEqual(
+            classify_tag_provenance(
+                "graphite sheet",
+                concept_slug="graphene-film",
+                all_concept_slugs=["graphene-film", "graphite-sheet"],
+            ),
+            "concept_slug_other",
+        )
+
+        # 4. tier_a_tags
+        self.assertEqual(
+            classify_tag_provenance(
+                "direct-bond-copper",
+                concept_slug="other",
+                tier_a_list=["direct-bond-copper"],
+            ),
+            "tier_a_tags",
+        )
+        self.assertEqual(
+            classify_tag_provenance(
+                "direct bond copper",
+                concept_slug="other",
+                tier_a_list=["direct-bond-copper"],
+            ),
+            "tier_a_tags",
+        )
+
+        # 5. manual_group
+        self.assertEqual(
+            classify_tag_provenance(
+                "al-sic",
+                concept_slug="other",
+                manual_groups=[["AlSiC", "al-sic"]],
+            ),
+            "manual_group",
+        )
+        self.assertEqual(
+            classify_tag_provenance(
+                "al sic",
+                concept_slug="other",
+                manual_groups=[["AlSiC", "al-sic"]],
+            ),
+            "manual_group",
+        )
+
+        # 6. free
+        self.assertEqual(
+            classify_tag_provenance("dielectric-fluid", concept_slug="spray-cooling"),
+            "free",
+        )
+
+        # Precedence: excluded > concept_slug > concept_slug_other > tier_a_tags > manual_group > free
+        # e.g., 'cooling' even if matching concept_slug is excluded
+        self.assertEqual(
+            classify_tag_provenance("cooling", concept_slug="cooling"),
+            "excluded",
+        )
+
+    def test_inventory_wiki_tags_disjoint_tiers_and_provenance_keys(self):
+        """Seed 3: Tier A and Tier B do not overlap, and output keys include provenance labels."""
+        write(
+            self.root,
+            "concepts/graphite-sheet.md",
+            "type: Concept\ntitle: 'Graphite Sheet'\ntags: [graphite-sheet]\n",
+        )
+        write(
+            self.root,
+            "concepts/graphene-film.md",
+            "type: Concept\ntitle: 'Graphene Film'\ntags: [graphene-film, graphite-sheet, free-tag]\n",
+        )
+
+        inv = inventory_wiki_tags(self.root)
+        tier_a_set = set(inv["tags_by_tier"]["Tier A"])
+        tier_b_set = set(inv["tags_by_tier"]["Tier B"])
+        # Tier A and Tier B must be disjoint
+        self.assertTrue(
+            tier_a_set.isdisjoint(tier_b_set),
+            f"Overlap found between Tier A and Tier B: {tier_a_set & tier_b_set}",
+        )
+        # graphite-sheet is in Tier A (concept_slug for graphite-sheet.md, concept_slug_other for graphene-film.md)
+        self.assertIn("graphite-sheet", tier_a_set)
+        self.assertNotIn("graphite-sheet", tier_b_set)
+
+        # Output keys must include provenance labels
+        self.assertIn("tags_by_provenance", inv)
+        self.assertIn("provenance_counts", inv)
+        self.assertIn("concept_slug", inv["tags_by_provenance"])
+        self.assertIn("concept_slug_other", inv["tags_by_provenance"])
+        self.assertIn("free", inv["tags_by_provenance"])
+        self.assertIn("excluded", inv["tags_by_provenance"])
+        self.assertIn("graphite-sheet", inv["tags_by_provenance"]["concept_slug_other"])
 
 
 if __name__ == "__main__":
