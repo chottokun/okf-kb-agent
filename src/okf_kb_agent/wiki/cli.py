@@ -344,9 +344,14 @@ def _parser() -> argparse.ArgumentParser:
             "synonym-generated",
             "tag",
             "verbatim",
+            "input-missing",
         ],
         default=[],
-        help="exit 1 if specified relation kind is detected (repeatable)",
+        help=(
+            "exit 1 if specified condition is detected (repeatable: filename, "
+            "synonym, synonym-manual, synonym-generated, tag (includes excluded tags), "
+            "verbatim, input-missing)"
+        ),
     )
 
     p_links = sub.add_parser(
@@ -962,7 +967,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                 f"Scanned: {sc.get('scanned_concept_files', 0)} concepts "
                 f"({sc.get('scanned_concept_tags_total', 0)} tags: "
                 f"{sc.get('scanned_fixed_vocabulary_tags', 0)} fixed vocabulary, "
-                f"{sc.get('scanned_free_tags', 0)} free), "
+                f"{sc.get('scanned_free_tags', 0)} free, "
+                f"{sc.get('scanned_excluded_tags', 0)} excluded), "
                 f"{sc.get('scanned_synonym_groups', 0)} synonym groups "
                 f"({sc.get('scanned_synonym_groups_manual', 0)} manual, "
                 f"{sc.get('scanned_synonym_groups_generated', 0)} generated)"
@@ -1003,7 +1009,9 @@ def _dispatch(args: argparse.Namespace) -> int:
 
                 if cand.verbatim_check:
                     vc = cand.verbatim_check
-                    if not vc.get("claimed_emergence", True):
+                    if vc.get("parse_status") == "failed":
+                        print(f"     - verbatim: parse-failed ({vc.get('snippet')})")
+                    elif not vc.get("claimed_emergence", True):
                         print("     - verbatim: taxonomy-gap (no emergence claimed)")
                     elif vc.get("verbatim_found"):
                         print(
@@ -1033,6 +1041,11 @@ def _dispatch(args: argparse.Namespace) -> int:
 
         fail_kinds = set(args.fail_on or [])
         if fail_kinds:
+            if "input-missing" in fail_kinds and (
+                len(result.inputs_status.get("inputs_missing", [])) > 0
+                or result.inputs_status.get("synonyms_json_parse_error") is not None
+            ):
+                return 1
             for cand in result.candidates:
                 if "filename" in fail_kinds and cand.relations.name_occupied is not None:
                     return 1
@@ -1050,7 +1063,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                     return 1
                 if "verbatim" in fail_kinds and (
                     cand.verbatim_check is not None
-                    and not cand.verbatim_check.get("verbatim_found", True)
+                    and cand.verbatim_check.get("verbatim_found") is False
                 ):
                     return 1
         return 0
