@@ -19,6 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 from html.parser import HTMLParser
@@ -774,7 +775,10 @@ class SourceVerifier:
             except urllib.error.HTTPError as exc:
                 self._last_final_url = _extract_response_url(exc, url)
                 status = exc.code
-                body = exc.read() if hasattr(exc, "read") else b""
+                # Read and close the error body immediately: HTTPError wraps the
+                # response stream and leaks it (ResourceWarning) if left open.
+                with closing(exc):
+                    body = exc.read() if hasattr(exc, "read") else b""
                 resp_headers = {k: v for k, v in exc.headers.items()} if exc.headers else {}
 
                 if status == 404:

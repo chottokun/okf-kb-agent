@@ -1064,7 +1064,8 @@ class CliTests(unittest.TestCase):
         raw = b"\x00\x80\xff\xfeokf"
         _atomic_write(bin_path, raw)
         self.assertEqual(bin_path.read_bytes(), raw)
-        self.assertEqual([p.name for p in bin_path.parent.iterdir()], ["note.txt", "blob.bin"])
+        # iterdir() order is filesystem-dependent; compare as a sorted list.
+        self.assertEqual(sorted(p.name for p in bin_path.parent.iterdir()), ["blob.bin", "note.txt"])
 
         fail_dir = self.root / "fail_atomic"
         fail_path = fail_dir / "target.txt"
