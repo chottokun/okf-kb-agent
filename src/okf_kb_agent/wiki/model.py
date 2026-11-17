@@ -14,6 +14,8 @@ from .frontmatter import FrontmatterError, dump_document, parse_frontmatter
 
 __all__ = [
     "BASIS_VALUES",
+    "EXPORT_FORMAT_VERSIONS",
+    "EXPORT_SCOPES",
     "GENRE_VALUES",
     "KNOWN_SOURCE_KINDS",
     "NEWS_SOURCE_KINDS",
@@ -85,6 +87,9 @@ NEWS_SOURCE_KINDS: tuple[str, ...] = (
 )
 
 GENRE_VALUES: tuple[str, ...] = ("paper", "patent", "web", "other")
+
+EXPORT_FORMAT_VERSIONS: tuple[int, ...] = (1, 2)
+EXPORT_SCOPES: tuple[str, ...] = ("all", "concepts", "patents")
 
 SOURCE_ATTR_KEYS: tuple[str, ...] = (
     "issued",

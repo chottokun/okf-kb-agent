@@ -1039,6 +1039,83 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code_bad, 1)
         self.assertIn("seed concept not found", err_bad)
 
+    def test_safe_name_distinguishes_non_ascii_strings(self):
+        import hashlib
+        from okf_kb_agent._common import _safe_name
+
+        h_mag = _safe_name("磁気材料")
+        h_semi = _safe_name("半導体")
+        self.assertEqual(h_mag, hashlib.sha1("磁気材料".encode("utf-8")).hexdigest()[:12])
+        self.assertEqual(h_semi, hashlib.sha1("半導体".encode("utf-8")).hexdigest()[:12])
+        self.assertNotEqual(h_mag, h_semi)
+        self.assertNotEqual(h_mag, hashlib.sha1(b"").hexdigest()[:12])
+        self.assertEqual(_safe_name("EP1234567A1"), "EP1234567A1")
+        self.assertEqual(_safe_name("10.1016/S1002-0071(12)60029-X"), "10.1016_S1002-0071_12_60029-X")
+
+    def test_atomic_write_str_bytes_and_cleanup_on_failure(self):
+        from okf_kb_agent._common import _atomic_write
+
+        text_path = self.root / "sub" / "note.txt"
+        _atomic_write(text_path, "hello 世界\n")
+        self.assertEqual(text_path.read_text(encoding="utf-8"), "hello 世界\n")
+        self.assertEqual([p.name for p in text_path.parent.iterdir()], ["note.txt"])
+
+        bin_path = self.root / "sub" / "blob.bin"
+        raw = b"\x00\x80\xff\xfeokf"
+        _atomic_write(bin_path, raw)
+        self.assertEqual(bin_path.read_bytes(), raw)
+        self.assertEqual([p.name for p in bin_path.parent.iterdir()], ["note.txt", "blob.bin"])
+
+        fail_dir = self.root / "fail_atomic"
+        fail_path = fail_dir / "target.txt"
+        _atomic_write(fail_path, "original")
+        with patch("okf_kb_agent._common.os.replace", side_effect=OSError("boom")):
+            with self.assertRaises(OSError):
+                _atomic_write(fail_path, "updated")
+        self.assertEqual(fail_path.read_text(encoding="utf-8"), "original")
+        self.assertEqual([p.name for p in fail_dir.iterdir()], ["target.txt"])
+
+    def test_cli_and_mcp_server_lazy_imports(self):
+        import os
+        import subprocess
+        import sys
+
+        src_dir = str(Path(__file__).resolve().parents[1] / "src")
+        env = os.environ.copy()
+        env["PYTHONPATH"] = (
+            f"{src_dir}{os.pathsep}{env['PYTHONPATH']}"
+            if env.get("PYTHONPATH")
+            else src_dir
+        )
+
+        cli_probe = (
+            "import sys, okf_kb_agent.wiki.cli as cli; "
+            "assert 'okf_kb_agent.epo' not in sys.modules; "
+            "assert 'okf_kb_agent.wiki.verify' not in sys.modules; "
+            "assert 'SourceVerifier' in dir(cli)"
+        )
+        res_cli = subprocess.run(
+            [sys.executable, "-c", cli_probe],
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(res_cli.returncode, 0, msg=res_cli.stderr)
+
+        mcp_probe = (
+            "import sys, okf_kb_agent.wiki.mcp_server; "
+            "assert 'okf_kb_agent.epo' not in sys.modules; "
+            "assert 'okf_kb_agent.wiki.verify' not in sys.modules; "
+            "assert 'okf_kb_agent.wiki.validate' not in sys.modules"
+        )
+        res_mcp = subprocess.run(
+            [sys.executable, "-c", mcp_probe],
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(res_mcp.returncode, 0, msg=res_mcp.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

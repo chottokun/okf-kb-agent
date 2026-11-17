@@ -48,6 +48,7 @@
   5. **グラフヒント**: 引用数（`outgoing_links`）と被リンク数（`backlinks`）をメタデータとして付与。ただし検索スコアの加減算には一切使用しない（PR #22）。
 * **境界線（これ以上の改良を行わない理由）**:
   * 道具としての検索機能はこれで完成形。意味の解釈や高度なリランキングを道具側に抱え込ませず、読み手（モデル・エージェント）の層に置く。むやみなセマンティック検索化やアルゴリズム変更で壊さないこと。
+  * なお、上記（`AND`/`OR`/`*`・Typo 救済・活用形正規化・加算的スコア内訳 `breakdown`・`doc_type`/`scope` フィルタ）の正本実装は Pattern A（`LocalSearchBackend`）であり、Pattern B（`SQLiteSearchBackend`）は SQLite FTS5 `bm25()` を用いた暗黙 `OR` 検索の補助インデックスとして位置づける（論理演算子や `breakdown`・フィルタ引数は対象外。`SQLiteSearchBackend.search()` の docstring でも明記）。
 
 ### 2.2 評価プローブの置き場と経緯
 * **プローブの置き場**: 各 KB の直下に `eval_queries.json` を配置する（例: `kb-semiconductor-thermal/eval_queries.json`, `kb-ai-research/eval_queries.json`）。
@@ -90,6 +91,19 @@
 * **現象**: KB 内の `evidence/` や作業用サブディレクトリに説明用の `.md` を置くと、`okf validate` が壊れたノートとして検知してエラーになる。
 * **理由**: `okf validate` は指定ディレクトリ配下のすべての `*.md` を概念ノードとしてパースする仕様。
 * **対策**: 証跡スナップショット、ログ、生テキストは必ず `.txt` や `.json` などの非 `.md` 拡張子で保存すること。
+
+### 3.5 `cli.py` / `wiki` の遅延ロード（PEP 562）と `unittest.mock.patch` の互換維持
+* **現象**: `cli.py` の起動負荷を下げるためにトップレベル import を単純に関数内 import へ移すと、テスト側の `patch("okf_kb_agent.wiki.cli.get_backend", ...)` や `patch("okf_kb_agent.wiki.cli.SourceVerifier.verify", ...)` が `AttributeError` またはパッチ素通りで失敗する。また、`main()` のトップレベル `except` で各サブモジュールの例外を捕捉しようとすると結局トップレベル import が必要になる。
+* **対策**:
+  1. 共通基底例外 `_common.OkfError` を導入し、`EpoError`, `FrontmatterError`, `BackendUnavailable`, `ToolError`, `SourceVerifyError` が多重継承で `OkfError` を継承する形を取り、`cli.py:main()` は `OkfError` のみをトップレベルで捕捉する。
+  2. `cli.py` に PEP 562（`__getattr__` / `__dir__`）と `_LAZY_EXPORTS` を維持し、パッチ対象となるシンボルは `sys.modules[__name__]` 経由で解決する。
+  3. `validate.py`・`export.py`・`tooling.py` から重いモジュール（`verify.py` 等）への参照も関数内 import に留め、MCP サーバ（`mcp_server.py`）起動時の連鎖ロードを防ぐ。
+
+### 3.6 `noexec` マウント環境でのテスト実行と `_atomic_write` の一時ファイル規約
+* **現象**: コンテナやセキュリティ強化 Linux 環境で `/tmp` が `noexec` マウントされていると、`tempfile.TemporaryDirectory()` 配下に生成したモックスクリプトの実行が `Permission denied`（`exit 126`）で失敗する。また、複数モジュールに重複していた `_atomic_write` が固定の `.tmp` 名を使っていたため、並行実行時の競合や例外時の一時ファイル残留リスクがあった。
+* **対策**:
+  1. 実行可能スクリプトを一時ディレクトリに生成するテスト（`tests/test_run_batch.py`）は、`_executable_tempdir()` で小スクリプトの実行可否をプローブし、実行不可ならリポジトリ配下の `.pytest_cache/` へフォールバックさせる。
+  2. 原子的書き込みは `_common._atomic_write(path, data: str | bytes, *, private=False)` に一本化し、`.{path.name}.{os.getpid()}.tmp` の PID 付き一時ファイル名と `try ... finally` による失敗時削除を徹底する。
 
 ---
 

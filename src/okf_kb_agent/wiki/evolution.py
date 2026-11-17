@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable
+
+from .._common import _atomic_write
 
 __all__ = [
     "FlowCluster",
@@ -420,17 +421,6 @@ def _diff_lines(values: list[str]) -> list[str]:
     if not values:
         return ["  - (none)"]
     return [f"  - `{value}`" for value in values]
-
-
-def _atomic_write(target: Path, text: str) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".tmp")
-    try:
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, target)
-    finally:
-        if tmp.exists():
-            tmp.unlink()
 
 
 def _step_text(step: Any) -> str:

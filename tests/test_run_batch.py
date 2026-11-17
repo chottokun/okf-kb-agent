@@ -19,9 +19,26 @@ def make_executable(path: Path, body: str) -> Path:
     return path
 
 
+def _executable_tempdir() -> tempfile.TemporaryDirectory[str]:
+    """Return a TemporaryDirectory on a filesystem that permits script execution."""
+    candidate = tempfile.TemporaryDirectory()
+    probe = make_executable(Path(candidate.name) / ".exec_probe", "exit 0\n")
+    try:
+        res = subprocess.run([str(probe)], capture_output=True, timeout=5)
+        if res.returncode == 0:
+            probe.unlink(missing_ok=True)
+            return candidate
+    except OSError:
+        pass
+    candidate.cleanup()
+    fallback_root = ROOT / ".pytest_cache"
+    fallback_root.mkdir(parents=True, exist_ok=True)
+    return tempfile.TemporaryDirectory(dir=fallback_root, prefix="run_batch_")
+
+
 class RunBatchWrapperTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = _executable_tempdir()
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
         self.work_dir = self.base / "work"

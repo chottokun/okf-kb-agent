@@ -10,13 +10,14 @@ from typing import Any
 
 from .frontmatter import FrontmatterError, parse_frontmatter
 from .model import (
+    EXPORT_FORMAT_VERSIONS,
+    EXPORT_SCOPES,
     SourceEntry,
     extract_links,
     is_special,
     parse_source_entry,
     resolve_source_genre,
 )
-from .verify import DEFAULT_CACHE_DIR, snapshot_key_for_url
 
 __all__ = [
     "EXPORT_FORMAT_VERSIONS",
@@ -25,9 +26,6 @@ __all__ = [
     "export_kb",
     "write_export_bundle",
 ]
-
-EXPORT_FORMAT_VERSIONS: tuple[int, ...] = (1, 2)
-EXPORT_SCOPES: tuple[str, ...] = ("all", "concepts", "patents")
 
 _ATOM_NS = {
     "atom": "http://www.w3.org/2005/Atom",
@@ -232,6 +230,7 @@ def _resolve_snapshot_metadata(
 ) -> dict[str, Any] | None:
     snap_key = entry.attrs.get("snapshot")
     if not snap_key and entry.id.startswith(("http://", "https://")):
+        from .verify import snapshot_key_for_url
         snap_key = snapshot_key_for_url(entry.id)
     if not snap_key:
         return None
@@ -341,7 +340,12 @@ def export_kb(
     ev_dir = kb_path / "evidence"
     if ev_dir.is_dir():
         search_caches.append(ev_dir)
-    for c in cache_dirs if cache_dirs is not None else [DEFAULT_CACHE_DIR]:
+    if cache_dirs is None:
+        from .verify import DEFAULT_CACHE_DIR
+        resolved_caches: list[Path] | tuple[Path, ...] = [DEFAULT_CACHE_DIR]
+    else:
+        resolved_caches = cache_dirs
+    for c in resolved_caches:
         c_path = Path(c)
         if c_path.is_dir() and c_path not in search_caches:
             search_caches.append(c_path)

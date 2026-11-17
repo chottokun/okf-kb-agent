@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from .._common import OkfError
 from .model import Concept, iter_concepts, load_concept
 from .tokenize import tokenize
 
@@ -120,7 +121,7 @@ def is_admin_file(rel: str) -> bool:
     return basename in ADMIN_BASENAMES or basename.startswith("index-")
 
 
-class BackendUnavailable(RuntimeError):
+class BackendUnavailable(OkfError, RuntimeError):
     """Raised when an optional backend (Qdrant/Gemma) is not installed."""
 
 

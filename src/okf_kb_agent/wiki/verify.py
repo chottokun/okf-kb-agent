@@ -25,13 +25,13 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
 
-from okf_kb_agent._common import RateLimiter, _atomic_write, _safe_name
+from okf_kb_agent._common import OkfError, RateLimiter, _atomic_write, _safe_name
 from okf_kb_agent.wiki.model import GENRE_VALUES, KNOWN_SOURCE_KINDS, parse_source_entry
 
 # Exceptions
 
 
-class SourceVerifyError(RuntimeError):
+class SourceVerifyError(OkfError, RuntimeError):
     """Base exception for source verification errors."""
 
 
@@ -461,14 +461,7 @@ def _extract_response_url(resp: Any, default_url: str) -> str:
     return default_url
 
 
-def _atomic_write_bytes(path: Path, data: bytes | str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    if isinstance(data, str):
-        tmp.write_text(data, encoding="utf-8")
-    else:
-        tmp.write_bytes(data)
-    tmp.replace(path)
+_atomic_write_bytes = _atomic_write
 
 
 def _clean_space(text: str) -> str:
@@ -547,7 +540,7 @@ def set_snapshot_orphan_reason(
         )
     meta_json = json.loads(meta_path.read_text("utf-8"))
     meta_json["orphan_reason"] = cleaned_reason
-    _atomic_write_bytes(
+    _atomic_write(
         meta_path,
         json.dumps(meta_json, indent=2, ensure_ascii=False),
     )
@@ -1663,11 +1656,11 @@ class SourceVerifier:
                 extractor = "html.parser"
 
             body_path = snapshots_dir / f"{key}.{ext}"
-            _atomic_write_bytes(body_path, body)
+            _atomic_write(body_path, body)
             snapshot_path = str(body_path)
 
             extracted_path = snapshots_dir / f"{key}.extracted.txt"
-            _atomic_write_bytes(extracted_path, text)
+            _atomic_write(extracted_path, text)
             extracted_bytes = text.encode("utf-8")
             extracted_sha256 = f"sha256:{hashlib.sha256(extracted_bytes).hexdigest()}"
 
@@ -1688,7 +1681,7 @@ class SourceVerifier:
             }
             if genre is not None:
                 meta_payload["genre"] = genre
-            _atomic_write_bytes(
+            _atomic_write(
                 meta_path,
                 json.dumps(meta_payload, indent=2, ensure_ascii=False),
             )
@@ -2013,11 +2006,11 @@ class SourceVerifier:
                     extractor = "binary"
 
             body_path = snapshots_dir / f"{key}.{stored_ext}"
-            _atomic_write_bytes(body_path, body)
+            _atomic_write(body_path, body)
             snapshot_path = str(body_path)
 
             extracted_path = snapshots_dir / f"{key}.extracted.txt"
-            _atomic_write_bytes(extracted_path, text)
+            _atomic_write(extracted_path, text)
             extracted_bytes = text.encode("utf-8")
             extracted_sha256 = f"sha256:{hashlib.sha256(extracted_bytes).hexdigest()}"
             now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -2039,7 +2032,7 @@ class SourceVerifier:
             }
             if genre is not None:
                 meta_payload["genre"] = genre
-            _atomic_write_bytes(
+            _atomic_write(
                 meta_path,
                 json.dumps(meta_payload, indent=2, ensure_ascii=False),
             )

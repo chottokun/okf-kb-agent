@@ -11,6 +11,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from .._common import OkfError
+
 __all__ = [
     "FrontmatterError",
     "dump_document",
@@ -29,7 +31,7 @@ _KEY_ORDER = (
 )
 
 
-class FrontmatterError(ValueError):
+class FrontmatterError(OkfError, ValueError):
     """Raised when a document has malformed or unsupported frontmatter."""
 
 

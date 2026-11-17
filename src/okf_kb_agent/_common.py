@@ -17,27 +17,39 @@ DEFAULT_SLEEP_S = 3.0
 
 __all__ = [
     "DEFAULT_SLEEP_S",
+    "OkfError",
     "RateLimiter",
     "_atomic_write",
     "_safe_name",
 ]
 
 
+class OkfError(Exception):
+    """Base exception for OKF errors."""
+
+
 def _safe_name(name: str) -> str:
-    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_")
-    return name or hashlib.sha1(name.encode()).hexdigest()[:12]
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_")
+    return cleaned or hashlib.sha1(name.encode("utf-8")).hexdigest()[:12]
 
 
-def _atomic_write(path: Path, data: str, *, private: bool = False) -> None:
+def _atomic_write(path: Path, data: str | bytes, *, private: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(data, encoding="utf-8")
-    if private:
-        try:
-            os.chmod(tmp, 0o600)
-        except OSError:
-            pass
-    tmp.replace(path)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        if isinstance(data, bytes):
+            tmp.write_bytes(data)
+        else:
+            tmp.write_text(data, encoding="utf-8")
+        if private:
+            try:
+                os.chmod(tmp, 0o600)
+            except OSError:
+                pass
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
 
 
 class RateLimiter:

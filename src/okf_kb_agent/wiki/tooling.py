@@ -12,12 +12,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from .context import ContextResolver
-from .graph import build_graph
-from .index import stale_indexes, write_indexes
-from .model import iter_concepts
-from .search import attach_link_counts, get_backend, pattern_for
-from .validate import validate_wiki
+from .._common import OkfError
 
 __all__ = [
     "TOOL_SPECS",
@@ -28,7 +23,7 @@ __all__ = [
 ]
 
 
-class ToolError(RuntimeError):
+class ToolError(OkfError, RuntimeError):
     """A caller-correctable tool error (bad argument, unknown seed, ...)."""
 
 
@@ -286,6 +281,10 @@ def tool_specs() -> list[dict[str, Any]]:
 
 def wiki_stats(root: str | Path) -> dict[str, Any]:
     """Compute the stats payload shared by ``okf stats`` and MCP."""
+    from .graph import build_graph
+    from .model import iter_concepts
+    from .search import pattern_for
+
     concepts = iter_concepts(root)
     graph = build_graph(root)
     types = Counter(concept.type or "(none)" for concept in concepts)
@@ -319,6 +318,8 @@ def dispatch_tool(name: str, arguments: dict[str, Any],
     wiki = _resolve_wiki(arguments.get("wiki", "."), root_path)
 
     if name == "okf_search":
+        from .search import attach_link_counts
+
         query = _required_string(arguments, "query")
         limit = _bounded_int(arguments, "limit", 10, 1, 100)
         doc_types = _string_filters(arguments, "type")
@@ -342,6 +343,8 @@ def dispatch_tool(name: str, arguments: dict[str, Any],
         return [hit.as_dict() for hit in hits]
 
     if name == "okf_context":
+        from .context import ContextResolver
+
         query = _required_string(arguments, "query")
         resolver = ContextResolver(
             wiki,
@@ -366,6 +369,8 @@ def dispatch_tool(name: str, arguments: dict[str, Any],
         ).as_dict()
 
     if name == "okf_traverse":
+        from .graph import build_graph
+
         seed = _required_string(arguments, "seed")
         graph = build_graph(wiki)
         scopes = arguments.get("scopes")
@@ -398,12 +403,16 @@ def dispatch_tool(name: str, arguments: dict[str, Any],
         return [hit.as_dict() for hit in hits]
 
     if name == "okf_validate":
+        from .validate import validate_wiki
+
         return validate_wiki(wiki).as_dict()
 
     if name == "okf_stats":
         return wiki_stats(wiki)
 
     if name == "okf_index":
+        from .index import stale_indexes, write_indexes
+
         if _boolean(arguments, "check", False):
             stale = stale_indexes(
                 wiki, max_entries=_bounded_int(
@@ -421,6 +430,8 @@ def dispatch_tool(name: str, arguments: dict[str, Any],
 
 
 def _tool_backend(arguments: dict[str, Any], wiki: Path, *, root: Path):
+    from .search import get_backend
+
     backend = _choice(arguments, "backend",
                       ("auto", "local", "sqlite", "qdrant"), "auto")
     db_path = _resolve_optional_path(

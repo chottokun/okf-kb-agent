@@ -30,7 +30,6 @@ from .model import (
     resolve_link,
     validate_meta,
 )
-from .verify import classify_target, snapshot_key_for_url
 
 __all__ = [
     "EvidenceReport",
@@ -469,6 +468,8 @@ def validate_evidence(
     evidence_dir: Path | str,
 ) -> tuple[EvidenceReport, list[tuple[str, str]]]:
     """Validate snapshot evidence files corresponding to URL sources in parsed notes."""
+    from .verify import classify_target, snapshot_key_for_url
+
     evidence_path = Path(evidence_dir)
     if not evidence_path.exists() or not evidence_path.is_dir():
         raise FileNotFoundError(f"evidence directory does not exist: {evidence_path}")

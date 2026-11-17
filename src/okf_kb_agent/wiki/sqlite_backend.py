@@ -183,6 +183,13 @@ class SQLiteSearchBackend:
 
     # -- search ------------------------------------------------------------
     def search(self, query: str, *, limit: int = 10) -> list[SearchHit]:
+        """Search documents with SQLite FTS5 ``bm25()`` using implicit ``OR`` matching.
+
+        Note: Unlike Pattern A (:class:`LocalSearchBackend`), this Pattern B
+        backend joins extracted terms with ``OR`` and does not support
+        boolean operators (``AND``/``OR``), trailing wildcard prefixes (``*``),
+        score ``breakdown`` dictionaries, or ``doc_type``/``scope`` filters.
+        """
         terms = _TERM_RE.findall(query or "")
         if not terms or limit <= 0:
             return []

@@ -13,6 +13,32 @@ semantic versioning.
   internal notes linked to and from in the same KB without affecting scoring,
   ranking, or breakdown totals.
 
+### Changed
+
+- Deferred heavy top-level imports in `wiki/cli.py`, `wiki/tooling.py`,
+  `wiki/validate.py`, and `wiki/export.py` using PEP 562 (`__getattr__` /
+  `__dir__`), moving shared export constants to `wiki/model.py` and unifying
+  package error handling under `_common.OkfError`. Initial `okf_kb_agent.*`
+  module loads dropped from 21 to 6 for `okf_kb_agent.wiki.cli` and from 14 to
+  5 for `okf_kb_agent.wiki.mcp_server`.
+- Extended `_common._atomic_write` to accept `str | bytes`, use PID-scoped
+  temporary filenames (`.{name}.{pid}.tmp`), and clean up failed writes in a
+  `finally` block; removed duplicate atomic-write helpers in
+  `wiki/evolution.py` and `wiki/verify.py` (keeping `_atomic_write_bytes` as a
+  compatibility alias).
+- Documented in `SQLiteSearchBackend.search()` that Pattern B performs implicit
+  `OR` matching over FTS5 `bm25()` rather than Pattern A's boolean operators,
+  trailing wildcards, score `breakdown`, or `doc_type`/`scope` filters.
+
+### Fixed
+
+- Fixed variable shadowing in `_common._safe_name` where non-ASCII-only inputs
+  hashed the emptied string (`da39a3ee5e6b`) instead of the original input,
+  preventing cache-key collisions across non-ASCII queries.
+- Made `tests/test_run_batch.py` resilient on systems with `noexec`-mounted
+  `/tmp` by probing tempdir executability in `_executable_tempdir()` and
+  falling back to `.pytest_cache/`.
+
 ## [0.2.0] - 2026-11-02
 
 ### Added

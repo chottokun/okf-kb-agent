@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from . import __version__
-from ._common import DEFAULT_SLEEP_S, RateLimiter, _atomic_write, _safe_name
+from ._common import DEFAULT_SLEEP_S, OkfError, RateLimiter, _atomic_write, _safe_name
 
 ROOT = Path.cwd()
 
@@ -78,7 +78,7 @@ DEFAULT_RATE_STATE = Path(
 # ---------------------------------------------------------------------------
 
 
-class EpoError(Exception):
+class EpoError(OkfError):
     """Base class for EPO client errors."""
 
 

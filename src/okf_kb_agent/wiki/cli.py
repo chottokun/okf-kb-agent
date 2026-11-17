@@ -2,48 +2,43 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from .. import __version__
-from ..epo import EpoError
-from .candidate import CandidateChecker
-from .claims import extract_claims
-from .context import ContextResolver
-from .evolution import (
-    analyse_flows,
-    append_learned,
-    apply_cluster,
-    load_history,
-    propose_cluster,
-    render_skill,
-)
-from .export import EXPORT_FORMAT_VERSIONS, EXPORT_SCOPES, export_bundle, write_export_bundle
+from .._common import OkfError
 from .frontmatter import FrontmatterError, parse_frontmatter
-from .graph import build_graph
-from .index import stale_indexes, write_indexes
-from .ingest import ingest_publication, ingest_query
-from .model import GENRE_VALUES
-from .search import BackendUnavailable, attach_link_counts, get_backend, is_admin_file
-from .synonyms import (
-    ExpandedSearchBackend,
-    SynonymIndex,
-    evaluate_synonyms,
-    load_eval_queries,
-    sync_synonyms,
-)
-from .tooling import TOOL_SPECS, ToolError, wiki_stats
-from .validate import validate_wiki
-from .verify import (
-    DEFAULT_CACHE_DIR,
-    SourceVerifier,
-    SourceVerifyError,
-    set_snapshot_orphan_reason,
-    snapshot_key_for_file,
-    snapshot_key_for_url,
-)
+from .model import EXPORT_FORMAT_VERSIONS, EXPORT_SCOPES, GENRE_VALUES
+
+if TYPE_CHECKING:
+    from ..epo import EpoError
+    from .search import BackendUnavailable, get_backend
+    from .tooling import ToolError
+    from .verify import (
+        DEFAULT_CACHE_DIR,
+        SourceVerifier,
+        SourceVerifyError,
+        set_snapshot_orphan_reason,
+        snapshot_key_for_file,
+        snapshot_key_for_url,
+    )
+
+_LAZY_EXPORTS: dict[str, tuple[str, str]] = {
+    "BackendUnavailable": (".search", "BackendUnavailable"),
+    "DEFAULT_CACHE_DIR": (".verify", "DEFAULT_CACHE_DIR"),
+    "EpoError": ("..epo", "EpoError"),
+    "SourceVerifier": (".verify", "SourceVerifier"),
+    "SourceVerifyError": (".verify", "SourceVerifyError"),
+    "ToolError": (".tooling", "ToolError"),
+    "get_backend": (".search", "get_backend"),
+    "set_snapshot_orphan_reason": (".verify", "set_snapshot_orphan_reason"),
+    "snapshot_key_for_file": (".verify", "snapshot_key_for_file"),
+    "snapshot_key_for_url": (".verify", "snapshot_key_for_url"),
+}
 
 __all__ = [
     "main",
@@ -55,13 +50,27 @@ __all__ = [
 ]
 
 
+def __getattr__(name: str) -> Any:
+    target = _LAZY_EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attr_name = target
+    module = importlib.import_module(module_name, __package__)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_LAZY_EXPORTS))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     try:
         return _dispatch(args)
-    except (EpoError, FrontmatterError, BackendUnavailable, ToolError,
-            SourceVerifyError, OSError, ValueError) as exc:
+    except (OkfError, OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
@@ -465,6 +474,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "index":
+        from .index import stale_indexes, write_indexes
+
         stale = stale_indexes(args.dir, max_entries=args.max_entries)
         if args.check:
             if args.json:
@@ -484,6 +495,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "validate":
+        from .validate import validate_wiki
+
         report = validate_wiki(
             args.dir,
             strict_provenance=args.strict_provenance,
@@ -514,6 +527,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0 if report.ok else 1
 
     if args.command == "search":
+        from .search import attach_link_counts
+
         backend = _backend_from_args(args, args.dir)
         doc_types = []
         if getattr(args, "type", None):
@@ -551,6 +566,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "traverse":
+        from .graph import build_graph
+
         graph = build_graph(args.dir)
         try:
             hits = graph.traverse(
@@ -572,6 +589,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "context":
+        from .context import ContextResolver
+
         resolver = ContextResolver(
             args.dir, damping_factor=args.gamma,
             token_limit=args.token_limit,
@@ -644,6 +663,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "sync-synonyms":
+        from .synonyms import sync_synonyms
+
         summary = sync_synonyms(
             args.dir,
             synonyms_path=args.synonyms,
@@ -664,6 +685,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0 if summary["ok"] else 1
 
     if args.command == "eval-synonyms":
+        from .synonyms import SynonymIndex, evaluate_synonyms, load_eval_queries
+
         wiki = Path(args.dir)
         queries_path = (Path(args.queries) if args.queries
                         else wiki / "eval_queries.json")
@@ -694,6 +717,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "stats":
+        from .tooling import wiki_stats
+
         stats = wiki_stats(args.dir)
         if args.json:
             print(json.dumps(stats, ensure_ascii=False, indent=2))
@@ -738,10 +763,21 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 1 if args.check and missing else 0
 
     if args.command == "schema":
+        from .tooling import TOOL_SPECS
+
         print(json.dumps(TOOL_SPECS, ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "evolve":
+        from .evolution import (
+            analyse_flows,
+            append_learned,
+            apply_cluster,
+            load_history,
+            propose_cluster,
+            render_skill,
+        )
+
         if args.dry_run and args.apply:
             raise ValueError("--dry-run and --apply are mutually exclusive")
         if args.dry_run and args.propose:
@@ -827,6 +863,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 2
         from ..epo import EpsClient, OpsClient
+        from .ingest import ingest_publication, ingest_query
 
         client = OpsClient(credentials_path=args.credentials,
                            cache_dir=args.cache_dir,
@@ -867,9 +904,10 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
             return 2
 
+        cli_mod = sys.modules[__name__]
         if getattr(args, "orphan_reason", None) is not None:
-            cache_dir = Path(args.cache_dir or DEFAULT_CACHE_DIR)
-            meta_path = set_snapshot_orphan_reason(
+            cache_dir = Path(args.cache_dir or cli_mod.DEFAULT_CACHE_DIR)
+            meta_path = cli_mod.set_snapshot_orphan_reason(
                 cache_dir,
                 args.target or "",
                 args.orphan_reason,
@@ -883,7 +921,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 print(f"orphan_reason: {args.orphan_reason.strip()}")
             return 0
 
-        verifier = SourceVerifier(
+        verifier = cli_mod.SourceVerifier(
             cache_dir=args.cache_dir,
             offline=args.offline,
             refresh=args.refresh,
@@ -935,6 +973,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0 if res.ok else 1
 
     if args.command == "candidate-check":
+        from .candidate import CandidateChecker
+
         wiki = Path(args.dir)
         if not wiki.exists():
             print(f"error: wiki root directory not found: {args.dir}", file=sys.stderr)
@@ -1069,6 +1109,9 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "links":
+        from .graph import build_graph
+        from .search import is_admin_file
+
         wiki = Path(args.dir)
         if not wiki.exists() or not wiki.is_dir():
             print(f"error: wiki root directory not found: {args.dir}", file=sys.stderr)
@@ -1141,6 +1184,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "export":
+        from .export import export_bundle, write_export_bundle
+
         labels = args.label or []
         if len(labels) > len(args.dirs):
             print("error: more --label options than KB directories", file=sys.stderr)
@@ -1192,6 +1237,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "claims":
+        from .claims import extract_claims
+
         wiki = Path(args.dir)
         if not wiki.exists() or not wiki.is_dir():
             print(f"error: wiki root directory not found: {args.dir}", file=sys.stderr)
@@ -1240,6 +1287,7 @@ def _add_qdrant_options(parser: argparse.ArgumentParser) -> None:
 def _backend_from_args(args: argparse.Namespace, root: str | Path,
                        *, backend: str | None = None,
                        auto_sync: bool = True):
+    cli_mod = sys.modules[__name__]
     name = backend or args.backend
     if name == "qdrant":
         if not args.embedding_url:
@@ -1251,13 +1299,15 @@ def _backend_from_args(args: argparse.Namespace, root: str | Path,
             api_key=args.embedding_api_key,
             style=args.embedding_style,
         )
-        base = get_backend(
+        base = cli_mod.get_backend(
             "qdrant", root, embedder=embedder, url=args.qdrant_url,
             collection=args.collection, api_key=args.qdrant_api_key,
             auto_sync=auto_sync)
     else:
-        base = get_backend(name, root, db_path=getattr(args, "db", None))
+        base = cli_mod.get_backend(name, root, db_path=getattr(args, "db", None))
     if getattr(args, "expand", False):
+        from .synonyms import ExpandedSearchBackend, SynonymIndex
+
         path = (Path(args.synonyms) if getattr(args, "synonyms", None)
                 else Path(root) / "synonyms.json")
         base = ExpandedSearchBackend(base, SynonymIndex.from_path(path))

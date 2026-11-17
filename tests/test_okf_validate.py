@@ -641,7 +641,7 @@ class TestEvidenceValidation(unittest.TestCase):
     ) -> tuple[str, Path | None, Path | None]:
         import hashlib
         import json
-        from okf_kb_agent.epo import _safe_name
+        from okf_kb_agent._common import _safe_name
 
         stem = _safe_name(bare_id)
         self.arxiv_dir.mkdir(parents=True, exist_ok=True)
