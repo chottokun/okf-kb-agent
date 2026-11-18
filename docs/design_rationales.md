@@ -48,7 +48,7 @@
   5. **グラフヒント**: 引用数（`outgoing_links`）と被リンク数（`backlinks`）をメタデータとして付与。ただし検索スコアの加減算には一切使用しない（PR #22）。
 * **境界線（これ以上の改良を行わない理由）**:
   * 道具としての検索機能はこれで完成形。意味の解釈や高度なリランキングを道具側に抱え込ませず、読み手（モデル・エージェント）の層に置く。むやみなセマンティック検索化やアルゴリズム変更で壊さないこと。
-  * なお、上記（`AND`/`OR`/`*`・Typo 救済・活用形正規化・加算的スコア内訳 `breakdown`・`doc_type`/`scope` フィルタ）の正本実装は Pattern A（`LocalSearchBackend`）であり、Pattern B（`SQLiteSearchBackend`）は SQLite FTS5 `bm25()` を用いた暗黙 `OR` 検索の補助インデックスとして位置づける（論理演算子や `breakdown`・フィルタ引数は対象外。`SQLiteSearchBackend.search()` の docstring でも明記）。
+  * なお、上記（`*` ワイルドカード・Typo 救済・活用形正規化・加算的スコア内訳 `breakdown`）の正本実装は Pattern A（`LocalSearchBackend`）であり、Pattern B（`SQLiteSearchBackend`）は SQLite FTS5 `bm25()` を用いた補助インデックスとして位置づける（明示的 `AND`/`OR` 演算子と `include_admin`/`doc_type`/`scope` フィルタは共通でサポートし、未指定時は暗黙 `OR` マッチング、スコア `breakdown` やワイルドカード・Typo 救済は対象外。`SQLiteSearchBackend.search()` の docstring でも明記）。
 
 ### 2.2 評価プローブの置き場と経緯
 * **プローブの置き場**: 各 KB の直下に `eval_queries.json` を配置する（例: `kb-semiconductor-thermal/eval_queries.json`, `kb-ai-research/eval_queries.json`）。

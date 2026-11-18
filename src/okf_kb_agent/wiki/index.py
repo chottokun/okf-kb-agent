@@ -7,12 +7,12 @@ as soon as it has enough context.
 """
 from __future__ import annotations
 
-import os
 import posixpath
 import re
 from collections import defaultdict
 from pathlib import Path
 
+from .._common import _atomic_write
 from .model import Concept, iter_concepts
 
 __all__ = ["plan_indexes", "stale_indexes", "write_indexes"]
@@ -58,15 +58,7 @@ def write_indexes(root: str | Path, *, max_entries: int = 50) -> list[str]:
     root = Path(root)
     pages = plan_indexes(root, max_entries=max_entries)
     for rel, content in pages.items():
-        target = root / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(target.name + ".tmp")
-        try:
-            tmp.write_text(content, encoding="utf-8")
-            os.replace(tmp, target)
-        finally:
-            if tmp.exists():
-                tmp.unlink()
+        _atomic_write(root / rel, content)
     return sorted(pages)
 
 

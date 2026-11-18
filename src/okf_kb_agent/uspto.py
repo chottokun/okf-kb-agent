@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from . import __version__
-from ._common import RateLimiter, _atomic_write, _safe_name
+from ._common import OkfError, RateLimiter, _atomic_write, _safe_name
 from .uspto_bulk import BulkError
 
 API_ROOT = "https://api.uspto.gov"
@@ -67,7 +67,7 @@ DEFAULT_RATE_STATE = Path(
 DEFAULT_USER_AGENT = f"okf-kb-agent/{__version__} (research; cache-first)"
 
 
-class UsptoError(Exception):
+class UsptoError(OkfError):
     """Base class for ODP client errors."""
 
 

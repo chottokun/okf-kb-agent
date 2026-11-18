@@ -1117,6 +1117,52 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(res_mcp.returncode, 0, msg=res_mcp.stderr)
 
+    def test_package_exceptions_inherit_okf_error(self):
+        from okf_kb_agent._common import OkfError
+        from okf_kb_agent.epo import EpoError
+        from okf_kb_agent.uspto import UsptoError
+        from okf_kb_agent.uspto_bulk import BulkError
+        from okf_kb_agent.wiki.frontmatter import FrontmatterError
+        from okf_kb_agent.wiki.search import BackendUnavailable
+        from okf_kb_agent.wiki.tooling import ToolError
+        from okf_kb_agent.wiki.verify import SourceVerifyError
+
+        for exc_cls in (
+            EpoError,
+            UsptoError,
+            BulkError,
+            FrontmatterError,
+            BackendUnavailable,
+            ToolError,
+            SourceVerifyError,
+        ):
+            self.assertTrue(
+                issubclass(exc_cls, OkfError),
+                f"{exc_cls.__name__} must inherit from OkfError",
+            )
+
+    def test_sqlite_backend_cli_filters_type(self):
+        from okf_kb_agent.wiki.sqlite_backend import fts5_available
+
+        if not fts5_available():
+            self.skipTest("SQLite FTS5 is unavailable")
+        write(self.root, "concepts/amorphous.md",
+              node("type: Concept\ntitle: Amorphous Alloy\n",
+                   "# Amorphous Alloy\nMetallic glass.\n"))
+        write(self.root, "gotchas/amorphous-brittle.md",
+              node("type: Gotcha\ntitle: Amorphous Brittleness\n",
+                   "# Amorphous Brittleness\nAmorphous fracture risk.\n"))
+        db = Path(self.tmp.name) / "filter.sqlite3"
+        code, _, err = self.run_cli("sqlite", self.root, "--db", db, "--json")
+        self.assertEqual(code, 0, msg=err)
+        code, out, err = self.run_cli(
+            "search", self.root, "amorphous",
+            "--backend", "sqlite", "--db", db, "--type", "gotcha", "--json",
+        )
+        self.assertEqual(code, 0, msg=err)
+        nodes = [hit["node"] for hit in json.loads(out)]
+        self.assertEqual(nodes, ["gotchas/amorphous-brittle.md"])
+
 
 if __name__ == "__main__":
     unittest.main()

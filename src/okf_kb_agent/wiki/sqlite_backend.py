@@ -20,11 +20,78 @@ from .model import (
     scope_from_heading,
     scope_of,
 )
-from .search import BackendUnavailable, SearchHit
+from .search import BackendUnavailable, SearchHit, is_admin_file
 
 __all__ = ["SQLiteSearchBackend", "fts5_available"]
 
 _TERM_RE = re.compile(r"[0-9A-Za-z_\u0080-\u00ff\u0370-\u03ff\u3040-\u30ff\u4e00-\u9fff]+")
+
+
+def _build_fts_query(query: str) -> tuple[str, list[str]]:
+    """Build an FTS5 MATCH expression and deduplicated term list.
+
+    Splits on uppercase ``OR`` first, then uppercase ``AND`` within each
+    disjunctive clause.  Clauses without ``AND`` retain Pattern B's implicit
+    ``OR`` behaviour across their extracted terms; clauses with ``AND`` join
+    their extracted terms with FTS5 ``AND``.  Standalone operator tokens are
+    excluded from the returned term list.
+    """
+    def _quote(term: str) -> str:
+        return '"' + term.replace('"', '""') + '"'
+
+    clauses_fts: list[str] = []
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def _add_term(term: str) -> None:
+        key = term.casefold()
+        if key not in seen:
+            seen.add(key)
+            terms.append(term)
+
+    for raw_clause in re.split(r"\bOR\b", query or ""):
+        clause = raw_clause.strip()
+        if not clause:
+            continue
+        if re.search(r"\bAND\b", clause):
+            clause_terms: list[str] = []
+            for raw_part in re.split(r"\bAND\b", clause):
+                part = raw_part.strip()
+                if not part:
+                    continue
+                for term in _TERM_RE.findall(part):
+                    _add_term(term)
+                    clause_terms.append(_quote(term))
+            if clause_terms:
+                joined = " AND ".join(clause_terms)
+                clauses_fts.append(f"({joined})" if len(clause_terms) > 1 else joined)
+        else:
+            clause_terms = []
+            for term in _TERM_RE.findall(clause):
+                _add_term(term)
+                clause_terms.append(_quote(term))
+            if clause_terms:
+                joined = " OR ".join(clause_terms)
+                clauses_fts.append(f"({joined})" if len(clause_terms) > 1 else joined)
+
+    if not clauses_fts:
+        return "", []
+    if len(clauses_fts) == 1:
+        inner = clauses_fts[0]
+        if inner.startswith("(") and inner.endswith(")"):
+            inner = inner[1:-1]
+        return inner, terms
+    return " OR ".join(clauses_fts), terms
+
+
+def _normalize_filter(value: str | list[str] | None) -> set[str] | None:
+    if not value:
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip().lower()
+        return {cleaned} if cleaned else None
+    cleaned = {str(item).strip().lower() for item in value if str(item).strip()}
+    return cleaned or None
 
 
 def fts5_available() -> bool:
@@ -182,30 +249,62 @@ class SQLiteSearchBackend:
             "DELETE FROM okf_edges WHERE source_path = ?", (rel,))
 
     # -- search ------------------------------------------------------------
-    def search(self, query: str, *, limit: int = 10) -> list[SearchHit]:
-        """Search documents with SQLite FTS5 ``bm25()`` using implicit ``OR`` matching.
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        include_admin: bool = False,
+        doc_type: str | list[str] | None = None,
+        scope: str | list[str] | None = None,
+    ) -> list[SearchHit]:
+        """Search documents with SQLite FTS5 ``bm25()``.
 
-        Note: Unlike Pattern A (:class:`LocalSearchBackend`), this Pattern B
-        backend joins extracted terms with ``OR`` and does not support
-        boolean operators (``AND``/``OR``), trailing wildcard prefixes (``*``),
-        score ``breakdown`` dictionaries, or ``doc_type``/``scope`` filters.
+        Supports explicit ``AND``/``OR`` boolean operators (with implicit ``OR``
+        matching for plain multi-term queries) as well as ``include_admin``,
+        ``doc_type``, and ``scope`` filters aligned with Pattern A
+        (:class:`LocalSearchBackend`).  Trailing ``*`` wildcards, typo/stem
+        fallback, and additive score ``breakdown`` remain Pattern A features.
         """
-        terms = _TERM_RE.findall(query or "")
+        expression, terms = _build_fts_query(query)
         if not terms or limit <= 0:
             return []
-        expression = " OR ".join(
-            f'"{term.replace(chr(34), chr(34) * 2)}"' for term in terms)
+        types = _normalize_filter(doc_type)
+        scopes = _normalize_filter(scope)
+        base_sql = (
+            "SELECT path, type, title, description, "
+            "snippet(okf_fts, 5, '', '', '…', 20), "
+            "bm25(okf_fts, 0.0, 1.0, 10.0, 4.0, 3.0, 1.0) AS rank "
+            "FROM okf_fts WHERE okf_fts MATCH ? "
+            "ORDER BY rank, path"
+        )
         with self._connection() as connection:
-            rows = connection.execute(
-                "SELECT path, title, description, "
-                "snippet(okf_fts, 5, '', '', '…', 20), "
-                "bm25(okf_fts, 0.0, 1.0, 10.0, 4.0, 3.0, 1.0) AS rank "
-                "FROM okf_fts WHERE okf_fts MATCH ? "
-                "ORDER BY rank, path LIMIT ?",
-                (expression, limit),
-            ).fetchall()
+            if include_admin and not types and not scopes:
+                rows = connection.execute(
+                    base_sql + " LIMIT ?",
+                    (expression, limit),
+                ).fetchall()
+            else:
+                rows = connection.execute(base_sql, (expression,)).fetchall()
         hits: list[SearchHit] = []
-        for path, title, description, snippet, rank in rows:
+        for path, doc_type_col, title, description, snippet, rank in rows:
+            if not include_admin and is_admin_file(path):
+                continue
+            if types:
+                row_type = (doc_type_col or "").lower()
+                path_lower = path.lower()
+                if row_type not in types and not any(
+                    path_lower.startswith(f"{t}s/") or path_lower.startswith(f"{t}/")
+                    for t in types
+                ):
+                    continue
+            if scopes:
+                try:
+                    concept = load_concept(self.root / path, self.root)
+                except (OSError, ValueError):
+                    continue
+                if str(concept.meta.get("scope", "")).lower() not in scopes:
+                    continue
             text = (title + " " + (snippet or "") + " " +
                     (description or "")).casefold()
             matched = sum(1 for term in terms if term.casefold() in text)
@@ -214,11 +313,19 @@ class SQLiteSearchBackend:
             hits.append(SearchHit(
                 node=path, score=score, title=title or path,
                 snippet=snippet or description or "", matched_terms=matched))
+            if len(hits) >= limit:
+                break
         if not hits and any(len(term) < 3 for term in terms):
             # Trigram indexes cannot match 1-2 character terms.
             from .search import LocalSearchBackend
             return LocalSearchBackend(
-                self.root, use_ripgrep=False).search(query, limit=limit)
+                self.root, use_ripgrep=False).search(
+                    query,
+                    limit=limit,
+                    include_admin=include_admin,
+                    doc_type=doc_type,
+                    scope=scope,
+                )
         return hits
 
     # -- graph driver interface -------------------------------------------

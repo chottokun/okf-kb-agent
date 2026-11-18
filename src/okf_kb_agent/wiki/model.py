@@ -1,7 +1,6 @@
 """OKF concept nodes: frontmatter, Markdown body and relative links."""
 from __future__ import annotations
 
-import os
 import posixpath
 import re
 from dataclasses import dataclass, field
@@ -10,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
+from .._common import _atomic_write
 from .frontmatter import FrontmatterError, dump_document, parse_frontmatter
 
 __all__ = [
@@ -593,16 +593,9 @@ def iter_concepts(root: str | Path) -> list[Concept]:
 
 def write_concept(path: str | Path, meta: dict[str, Any],
                   body: str = "") -> Path:
-    """Atomically write a concept document (``.tmp`` + ``os.replace``)."""
+    """Atomically write a concept document (PID-scoped ``.tmp`` + ``os.replace``)."""
     target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".tmp")
-    try:
-        tmp.write_text(dump_document(meta, body), encoding="utf-8")
-        os.replace(tmp, target)
-    finally:
-        if tmp.exists():
-            tmp.unlink()
+    _atomic_write(target, dump_document(meta, body))
     return target
 
 

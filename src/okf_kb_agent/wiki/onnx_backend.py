@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from .._common import _atomic_write
 from .graph import build_graph
 from .model import extract_sections, iter_concepts, load_concept, tokenize
 from .search import BackendUnavailable, SearchHit
@@ -118,14 +119,10 @@ class MicroOnnxBackend:
                 for path, vector in sorted(self.vectors.items())
             },
         }
-        tmp = self.meta_path.with_name(self.meta_path.name + ".tmp")
-        try:
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
-                           encoding="utf-8")
-            os.replace(tmp, self.meta_path)
-        finally:
-            if tmp.exists():
-                tmp.unlink()
+        _atomic_write(
+            self.meta_path,
+            json.dumps(payload, ensure_ascii=False, indent=2),
+        )
 
     def sync(self, *, force: bool = False) -> dict[str, int]:
         concepts = {concept.rel: concept

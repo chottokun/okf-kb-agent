@@ -26,9 +26,15 @@ semantic versioning.
   `finally` block; removed duplicate atomic-write helpers in
   `wiki/evolution.py` and `wiki/verify.py` (keeping `_atomic_write_bytes` as a
   compatibility alias).
-- Documented in `SQLiteSearchBackend.search()` that Pattern B performs implicit
-  `OR` matching over FTS5 `bm25()` rather than Pattern A's boolean operators,
-  trailing wildcards, score `breakdown`, or `doc_type`/`scope` filters.
+- Unified the remaining inline `.tmp` atomic-write implementations in
+  `wiki/index.py`, `wiki/model.py`, `wiki/onnx_backend.py`, and
+  `wiki/synonyms.py` onto `_common._atomic_write`, and made `UsptoError` and
+  `BulkError` inherit from `_common.OkfError`.
+- Extended `SQLiteSearchBackend.search()` (Pattern B) to honour explicit
+  `AND`/`OR` boolean operators (without treating standalone operator tokens as
+  search terms) and `include_admin`/`doc_type`/`scope` filters aligned with
+  Pattern A, and documented backend capabilities in `okf search`/`context`
+  `--backend` help.
 
 ### Fixed
 

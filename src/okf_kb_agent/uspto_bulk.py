@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from . import __version__
+from ._common import OkfError
 
 API_ROOT = "https://api.uspto.gov"
 FILES_ROOT = API_ROOT + "/api/v1/datasets/products/files"
@@ -38,7 +39,7 @@ DEFAULT_TIMEOUT = 180.0
 DEFAULT_USER_AGENT = f"okf-kb-agent/{__version__} (research; cache-first)"
 
 
-class BulkError(Exception):
+class BulkError(OkfError):
     """A download, extraction or parse step failed."""
 
 

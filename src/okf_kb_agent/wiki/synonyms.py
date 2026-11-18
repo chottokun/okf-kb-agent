@@ -11,13 +11,13 @@ decision documented in ``docs/okf_wiki.md`` (more than 15% failure).
 from __future__ import annotations
 
 import json
-import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from .._common import _atomic_write
 from .model import Concept, iter_concepts, load_concept
 from .search import SearchHit, pattern_for
 
@@ -618,14 +618,7 @@ def sync_synonyms(
     stale = existing_content != content
     written = False
     if not check and stale:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(target.name + ".tmp")
-        try:
-            tmp.write_text(content, encoding="utf-8")
-            os.replace(tmp, target)
-        finally:
-            if tmp.exists():
-                tmp.unlink()
+        _atomic_write(target, content)
         written = True
 
     return {

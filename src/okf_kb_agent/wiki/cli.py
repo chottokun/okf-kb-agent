@@ -115,7 +115,9 @@ def _parser() -> argparse.ArgumentParser:
     p_search.add_argument("--limit", type=int, default=10)
     p_search.add_argument("--backend",
                           choices=("auto", "local", "sqlite", "qdrant"),
-                          default="auto")
+                          default="auto",
+                          help="search backend: local (Pattern A exact/stem/typo scorer), "
+                               "sqlite (Pattern B FTS5 bm25), qdrant (Pattern C), or auto")
     p_search.add_argument("--db", default=None,
                           help="SQLite database path (Pattern B)")
     _add_qdrant_options(p_search)
@@ -164,7 +166,9 @@ def _parser() -> argparse.ArgumentParser:
     p_context.add_argument("--min-relevance", type=float, default=0.05)
     p_context.add_argument("--backend",
                            choices=("auto", "local", "sqlite", "qdrant"),
-                           default="auto")
+                           default="auto",
+                           help="search backend: local (Pattern A exact/stem/typo scorer), "
+                                "sqlite (Pattern B FTS5 bm25), qdrant (Pattern C), or auto")
     p_context.add_argument("--db", default=None,
                            help="SQLite database path (Pattern B)")
     _add_qdrant_options(p_context)

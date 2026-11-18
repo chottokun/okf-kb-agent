@@ -129,6 +129,66 @@ class SQLiteBackendTests(unittest.TestCase):
         self.assertTrue(hits_alpha)
         self.assertEqual(hits_alpha[0].node, "seeds/catalyst.md")
 
+    def test_search_and_or_operators_do_not_match_literal_and(self):
+        write(
+            self.root, "seeds/only_and.md", "type: Note\ntitle: Only And\n",
+            "# Only And\n\nCopper and aluminum thermal path.\n",
+        )
+        write(
+            self.root, "seeds/lithium.md", "type: Note\ntitle: Lithium\n",
+            "# Lithium\n\nLithium electrolyte.\n",
+        )
+        backend = self.backend()
+        backend.sync()
+
+        and_hits = backend.search("amorphous AND brittleness")
+        self.assertEqual([h.node for h in and_hits], ["gotchas/failure.md"])
+        self.assertEqual(and_hits[0].matched_terms, 2)
+
+        # Standalone boolean operators must not match literal "and"/"or" words.
+        self.assertEqual(backend.search("AND"), [])
+        self.assertEqual(backend.search("OR"), [])
+
+        or_hits = backend.search("lithium OR brittleness")
+        self.assertEqual(
+            {h.node for h in or_hits},
+            {"seeds/lithium.md", "gotchas/failure.md"},
+        )
+
+    def test_search_filters_admin_doc_type_and_scope(self):
+        write(
+            self.root, "BUILDLOG.md", "type: Note\ntitle: Build Log\n",
+            "# Build Log\n\nAmorphous log entry.\n",
+        )
+        write(
+            self.root, "gotchas/scoped.md",
+            "type: Gotcha\nscope: gotchas\ntitle: Scoped Failure\n",
+            "# Scoped Failure\n\nAmorphous brittle fracture.\n",
+        )
+        backend = self.backend()
+        backend.sync()
+
+        default_nodes = [h.node for h in backend.search("amorphous")]
+        self.assertNotIn("BUILDLOG.md", default_nodes)
+        self.assertIn("seeds/amorphous.md", default_nodes)
+
+        admin_nodes = [
+            h.node for h in backend.search("amorphous", include_admin=True)
+        ]
+        self.assertIn("BUILDLOG.md", admin_nodes)
+
+        gotcha_nodes = {
+            h.node for h in backend.search("amorphous", doc_type="gotcha")
+        }
+        self.assertEqual(
+            gotcha_nodes, {"gotchas/failure.md", "gotchas/scoped.md"}
+        )
+
+        scoped_nodes = [
+            h.node for h in backend.search("amorphous", scope="gotchas")
+        ]
+        self.assertEqual(scoped_nodes, ["gotchas/scoped.md"])
+
 
 if __name__ == "__main__":
     unittest.main()
