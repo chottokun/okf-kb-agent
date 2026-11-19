@@ -123,6 +123,7 @@ to `--backend local`.
 - Informational link counts: `--json` hits carry `outgoing_links` and `backlinks` (distinct non-special internal notes in the same KB linked to and from, attached purely for the reader; never enter scoring, ranking, or breakdown totals).
 
 **MCP equivalents**: The same operations are exposed over MCP with identical semantics and result schemas: `okf_search` (accepts `type` / `scope` / `expand` / `backend` exactly like the CLI), `okf_context`, `okf_traverse`, `okf_links`, `okf_stats`, and `okf_validate` (with `check_evidence` / `evidence_dir` / `strict_provenance`). The scoring, filter, and query-craft guidance above applies unchanged to MCP callers; only the transport differs. `okf_candidate_check` (candidate/proposal inspection) and `okf_claims` (extraction and deterministic sampling only; no verdicts) are available over both CLI and MCP.
+
 ### Synonym sync and quality gate
 
 `<wiki>/synonyms.json` contains alias groups synchronized from `concepts/*.md`

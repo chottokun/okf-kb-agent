@@ -4,7 +4,8 @@ description: Run the single intake gate for OKF knowledge growth — collect can
 trigger_conditions:
   - intake
   - candidate proposal
-  - 候補
+  - 候補提案
+  - 取り込み候補
   - 取り込み判定
   - proposal inbox
   - 増補候補
@@ -45,17 +46,17 @@ KB 自身の状態から欠けの事実を列挙する。
 
 新規概念とは直交する軸。入口はルート1のシグナルが兼ねる：被リンク数が多いのに出典が薄いハブ、ノートが小さい、`verified_at` が古い、新しい追補・対抗論文の出現（ルート2からも入る）。
 
-- 増補の中身：出典を paper-centric 基準（定義論文1＋追補・対抗2＝3本）へ寄せて再接地、数値と条件を読んだ版に揃える、リンクの双方向補完、`verified_at` 更新。
+- 増補の中身：出典を対象 KB のプロファイル基準へ寄せて再接地（paper-centric KB では定義論文1＋追補・対抗2＝3本が基準）、数値と条件を読んだ版に揃える、リンクの双方向補完、`verified_at` 更新。
 - ユニット種別は `enrichment` として新規構築と区別する。監査は差分型（変更・追加された claims のみ照合）になる（`kb-audit` 参照）。
 
 ## 3. Proposal の書式
 
-既存の phase-a 形式に揃える：ヘッダ（`proposer` / `date` / `kb` / `slug` / `title` / `strand` / `origin`＝指示の文脈と一次ソースの識別子）＋ `gap-axis`（既存ノートに対する欠けの軸）＋隣接性（直接の接続と拡張の仕方）＋ KB 内での浮上（既存ノートからの引用を出典ノート名つきで。無ければ `taxonomy-gap` と明示）。
+書式は本スキルが定義する：ヘッダ（`proposer` / `date` / `kb` / `slug` / `title` / `origin`＝指示の文脈と一次ソースの識別子。`strand` は対象 KB のプロファイルが持つ場合のみ）＋ `gap-axis`（既存ノートに対する欠けの軸）＋隣接性（直接の接続と拡張の仕方）＋ KB 内での浮上（既存ノートからの引用を出典ノート名つきで。無ければ `taxonomy-gap` と明示）。なお、`okf_candidate_check` の verbatim 照合（check_proposal）が解析できるのは、slug 見出しに `(b) Primary-Source Emergence` の引用行を伴う候補プール形式である。verbatim 照合にかけたい proposal はその形式で書く。
 
 ## 4. Intake ゲートの手順
 
 1. **受け付け**：proposal を inbox に置く（ルートを問わず同じ置き場・同じ書式）。
-2. **事実確認**：`okf_candidate_check` で slug の占有、同義語グループへの所属、タグ来歴、（proposal 併用時は）verbatim の証跡を確認する。結果は事実として proposal に添える。
+2. **事実確認**：`okf_candidate_check` で slug の占有、同義語グループへの所属、タグ来歴を確認する。`candidates` と `proposal` を併用した場合、proposal は inputs の状態記録にのみ使われ verbatim 照合は走らない。verbatim 照合は、解析可能な形式で書かれた proposal を単独で渡したとき（check_proposal）に実行される。結果は事実として proposal に添える。
 3. **選定**：提案者以外の選定者が採否を決め、採用分に優先順位をつける。優先順位はこの層でのみつける（道具の出力順や件数を順位として流用しない）。
 4. **キュー投入**：採用分を構築ユニット化して queue へ渡す（変換と queue の管理はハーネス層。ユニットには対象 KB、`kind`（new / enrichment）、出典識別子を持たせる）。
 5. **不採用の記録**：不採用分も理由とともに inbox に残す。再提案は新しい事実が付いた場合のみ。
