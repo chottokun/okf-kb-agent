@@ -43,6 +43,8 @@ trigger_conditions:
    - `uv run okf eval-synonyms <wiki> --json`
    - 記録値：failure_rate・improved / regressed 件数。
 
+**MCP 経由の等価実行**（シェルを持たない監査者向け）：ゲート 1 は `okf_validate`（`check_evidence` / `evidence_dir` / `strict_provenance` オプションが CLI と同じ意味）、ゲート 3 は `okf_links` で等価に実行できる。候補の事前検査は `okf_candidate_check`。抜き取り照合のサンプリング（§4）は `okf_claims`（`sample` / `seed` / `notes`）で MCP でも等価に実行できる。
+
 ## 4. 抜き取り照合
 
 1. **母集団抽出とサンプリング**：
@@ -50,6 +52,7 @@ trigger_conditions:
    - サンプル数 `N` の基準：新規／変更ノートの主張が **15 件以下なら全件**（`--sample` なし）、**それ以外は 15–20 件**。
 2. **証跡との照合**：
    - 各サンプルについて、ノートの `sources` が指す引用元の証跡（`<wiki>/evidence/snapshots/`、全文、または `verify-source` キャッシュ）と照合する。
+   - 証跡の在りかは出典ジャンルで異なる：paper（DOI）／preprint（arXiv）と特許の正本は共有キャッシュ側（`verify-source` キャッシュ／EPO OPS キャッシュ）にあり、KB へ複写しない。Web は KB 内スナップショット（`evidence/`）で、ファイル名ではなく `.meta.json` の URL／identifier で照合する。ローカル取り込みは frontmatter の識別子と本文中の証跡パス言及で解決する。
    - 結果は次の 3 値で記録する：
      - `supports`：証跡が主張の数値を裏付けている
      - `contradicts`：証跡と主張の数値・内容が矛盾している
@@ -74,6 +77,7 @@ trigger_conditions:
 
 - **相互監査**が本線、**自己監査**も正規ルートとする。いずれの場合も構築者と監査者を必ず記録する。
 - `contradicts` が 1 件でも出たユニットは昇格を止め、構築者が修正したうえで**影響範囲だけを再監査**する。
+- 監査の成果物は **verdict**（unit / verdict=pass / auditor / date / claims_checked / contradictions）であり、昇格の機械的実行（ゲート再実行・照合つきコピー・記録追記）は verdict を入力とする決定的プロモータ（ハーネス層）が担う。監査者は本番 KB へ手作業でコピーしない。
 
 ## 7. 委譲先の明示
 
