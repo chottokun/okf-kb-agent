@@ -44,7 +44,7 @@ OKF v0.2 stores knowledge as plain Markdown + YAML frontmatter (`1 topic = 1 fil
 
 ### Skills, Examples, Scripts & Docs
 
-- `.agents/skills/` — project skills (`okf-wiki`, `okf-design-conventions`, `source-verify`, `kb-batch-discipline`, `kb-audit`, `patent-to-wiki`, `create-skill`, `modify-skill`)
+- `.agents/skills/` — project skills (`okf-wiki`, `okf-design-conventions`, `source-verify`, `kb-batch-discipline`, `kb-audit`, `kb-intake`, `patent-to-wiki`, `create-skill`, `modify-skill`)
 - `examples/wiki/` — synthetic demo wiki (concepts, workflows, gotchas, synergistic notes, and synthetic patents)
 - `scripts/release_smoke.py` — offline CLI/MCP release smoke test
 - `scripts/check_dist.py` — wheel/sdist secret and CLI-content guard
