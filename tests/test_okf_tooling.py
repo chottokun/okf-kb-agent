@@ -295,6 +295,8 @@ class ToolingTests(unittest.TestCase):
         self.assertEqual(props["candidates"]["type"], "array")
         self.assertEqual(props["candidates"]["items"]["type"], "string")
         self.assertEqual(props["proposal"]["type"], "string")
+        self.assertNotIn("mutually exclusive", props["candidates"]["description"].lower())
+        self.assertNotIn("mutually exclusive", props["proposal"]["description"].lower())
         self.assertNotIn("fail_on", props)
 
     def test_candidate_check_candidates_proposal_and_cli_parity(self):
@@ -420,13 +422,6 @@ class ToolingTests(unittest.TestCase):
                 {"wiki": "wiki", "candidates": []},
                 root=self.base,
             )
-        # Both candidates and proposal
-        with self.assertRaises(ToolError):
-            dispatch_tool(
-                "okf_candidate_check",
-                {"wiki": "wiki", "candidates": ["x"], "proposal": "wiki/proposal.md"},
-                root=self.base,
-            )
         # Bad candidates types / traversal
         for bad in ("not-a-list", [""], ["  "], [123], ["../a"], ["a/b"], ["a\\b"]):
             with self.assertRaises(ToolError):
@@ -458,6 +453,65 @@ class ToolingTests(unittest.TestCase):
                     root=confined,
                 )
         self.assertTrue(prop.exists())
+
+    def test_candidate_check_candidates_with_proposal_context(self):
+        from okf_kb_agent.wiki.candidate import CandidateChecker
+
+        confined = self.base / "combined_cand"
+        cand_wiki = confined / "wiki"
+        write(cand_wiki, "index.md", "# Index\n")
+        write(
+            cand_wiki,
+            "concepts/interposer.md",
+            node("type: Concept\ntitle: 'Interposer'\ntags: [interposer]\n"),
+        )
+        write(
+            cand_wiki,
+            "synonyms.json",
+            json.dumps({"groups": [], "manual_groups": [], "generated_groups": []}),
+        )
+        proposal = write(
+            cand_wiki,
+            "proposal.md",
+            (
+                "### Candidate Proposal Pool\n"
+                "1. **`other-slug`** — 別候補 [`niche`]\n"
+                "   - **(b) Primary-Source Emergence**: taxonomy-gap\n"
+            ),
+        )
+
+        res = dispatch_tool(
+            "okf_candidate_check",
+            {
+                "wiki": "wiki",
+                "candidates": ["interposer"],
+                "proposal": "wiki/proposal.md",
+            },
+            root=confined,
+        )
+        self.assertEqual([c["slug"] for c in res["candidates"]], ["interposer"])
+        self.assertIsNone(res["candidates"][0]["verbatim_check"])
+        self.assertTrue(res["inputs_status"]["proposal_file_present"])
+        self.assertEqual(
+            res,
+            CandidateChecker(cand_wiki)
+            .check_candidates(["interposer"], proposal_path=proposal)
+            .to_dict(),
+        )
+
+        # Escaping proposal is still rejected even when candidates is given
+        outside_prop = self.base / "outside_combined_proposal.md"
+        outside_prop.write_text("# Outside\n", encoding="utf-8")
+        with self.assertRaises(ToolError):
+            dispatch_tool(
+                "okf_candidate_check",
+                {
+                    "wiki": "wiki",
+                    "candidates": ["interposer"],
+                    "proposal": "../outside_combined_proposal.md",
+                },
+                root=confined,
+            )
 
     # -- U2: okf_links -----------------------------------------------------
 
