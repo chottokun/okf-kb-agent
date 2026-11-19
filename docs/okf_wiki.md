@@ -579,7 +579,9 @@ OKF_MCP_TOKEN="$(openssl rand -hex 24)" \
 | `okf_search` | 検索シード（Qdrant/同義語展開も選択可） | なし |
 | `okf_context` | トークン上限付き文脈解決（同上） | なし |
 | `okf_traverse` | 重み付きグラフ探索 | なし |
-| `okf_validate` | 構造・リンク検証 | なし |
+| `okf_validate` | 構造・リンク・来歴・証跡検証（`strict_provenance` / `check_evidence` / `evidence_dir`） | なし |
+| `okf_candidate_check` | 候補スラッグの重複・同義語・タグ来歴・提案の逐語証跡検査 | なし |
+| `okf_links` | リンク到達性・孤立/無入次数/無出次数・連結成分診断 | なし |
 | `okf_stats` | 件数・Pattern 判定 | なし |
 | `okf_index` | 索引の検査／再生成 | あり |
 | `okf_ingest_epo` | EPO 取り込み | あり |
@@ -618,7 +620,8 @@ curl -s -H "Authorization: Bearer $OKF_MCP_TOKEN" \
   http://127.0.0.1:8765/mcp
 ```
 
-- `--root` は許可ルート。`wiki` 引数は解決後にこの配下でなければ拒否。
+- `--root` は許可ルート。`wiki` 引数に加え、`proposal`（`okf_candidate_check`）や `evidence_dir`（`okf_validate`、`check_evidence=true` 時の既定は `<wiki>/evidence`）も解決後に `--root` 配下でなければ拒否。
+- `okf_candidate_check` は中立的な事実関係（`name_occupied` / `synonyms` / `tag_on` / `verbatim_check`）のみを返し、`fail_on` や合否判定・重みづけは持たない。
 - `okf_ingest_epo` の `offline` は既定 `true`。ネットワーク取得は
   EPO スキルがキャッシュ欠損を確認した後だけ `false` にする。
 - `okf_search` / `okf_context` は `backend=qdrant` と

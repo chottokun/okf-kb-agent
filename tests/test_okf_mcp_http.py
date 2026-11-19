@@ -84,6 +84,15 @@ class McpHttpTests(unittest.TestCase):
         self.assertEqual(hits[0]["node"], "a.md")
         status, _, body = self.request(
             "POST", "/mcp",
+            {"jsonrpc": "2.0", "id": 21, "method": "tools/call",
+             "params": {"name": "okf_links",
+                        "arguments": {"wiki": "wiki"}}})
+        self.assertEqual(status, 200)
+        links_result = json.loads(body)["result"]
+        self.assertFalse(links_result["isError"])
+        self.assertEqual(json.loads(links_result["content"][0]["text"])["node_count"], 1)
+        status, _, body = self.request(
+            "POST", "/mcp",
             {"jsonrpc": "2.0", "method": "notifications/initialized"})
         self.assertEqual(status, 202)
         self.assertEqual(body, "")

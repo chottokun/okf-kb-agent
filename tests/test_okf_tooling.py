@@ -2,16 +2,22 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 
+from okf_kb_agent.wiki.cli import main as cli_main
 from okf_kb_agent.wiki.tooling import (
     TOOL_SPECS,
     ToolError,
     dispatch_tool,
     wiki_stats,
 )
+from okf_kb_agent.wiki.validate import validate_wiki
+from okf_kb_agent.wiki.verify import snapshot_key_for_url
 
 
 def write(root: Path, rel: str, text: str) -> Path:
@@ -267,6 +273,569 @@ class ToolingTests(unittest.TestCase):
         via_tool = dispatch_tool(
             "okf_stats", {"wiki": "wiki"}, root=self.base)
         self.assertEqual(direct, via_tool)
+
+    def _run_cli_json(self, *args: str):
+        out, err = StringIO(), StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli_main([str(arg) for arg in args])
+        return code, json.loads(out.getvalue()) if out.getvalue().strip() else None, err.getvalue()
+
+    def _spec(self, name: str) -> dict:
+        return next(spec for spec in TOOL_SPECS if spec["name"] == name)
+
+    # -- U1: okf_candidate_check -------------------------------------------
+
+    def test_candidate_check_schema_contract(self):
+        spec = self._spec("okf_candidate_check")
+        schema = spec["inputSchema"]
+        self.assertEqual(schema["required"], ["wiki"])
+        self.assertFalse(schema["additionalProperties"])
+        props = schema["properties"]
+        self.assertEqual(set(props), {"wiki", "candidates", "proposal"})
+        self.assertEqual(props["candidates"]["type"], "array")
+        self.assertEqual(props["candidates"]["items"]["type"], "string")
+        self.assertEqual(props["proposal"]["type"], "string")
+        self.assertNotIn("fail_on", props)
+
+    def test_candidate_check_candidates_proposal_and_cli_parity(self):
+        cand_wiki = self.base / "cand_wiki"
+        write(cand_wiki, "index.md", "# Index\n")
+        write(
+            cand_wiki,
+            "concepts/spray-cooling.md",
+            node(
+                "type: Concept\ntitle: 'Spray Cooling'\n"
+                "tags: [spray-cooling, dielectric-fluid]\n",
+                "# Spray Cooling\nUses dielectric fluid droplets.\n",
+            ),
+        )
+        write(
+            cand_wiki,
+            "concepts/interposer.md",
+            node("type: Concept\ntitle: 'Interposer'\ntags: [interposer]\n"),
+        )
+        write(
+            cand_wiki,
+            "synonyms.json",
+            json.dumps({
+                "groups": [
+                    ["tim", "thermal-interface-materials"],
+                    ["spray-cooling", "dielectric-fluid"],
+                ],
+                "manual_groups": [["tim", "thermal-interface-materials"]],
+                "generated_groups": [["spray-cooling", "dielectric-fluid"]],
+            }),
+        )
+
+        # Direct candidates: name_occupied, manual synonym, generated synonym + tag_on, clean
+        res = dispatch_tool(
+            "okf_candidate_check",
+            {
+                "wiki": "cand_wiki",
+                "candidates": ["interposer", "tim", "dielectric-fluid", "novel-slug"],
+            },
+            root=self.base,
+        )
+        dumped = json.dumps(res)
+        for forbidden in ('"status"', '"severity"', '"verdict"', '"weight"', '"hard_collision"'):
+            self.assertNotIn(forbidden, dumped)
+
+        by_slug = {c["slug"]: c for c in res["candidates"]}
+        self.assertIsNotNone(by_slug["interposer"]["relations"]["name_occupied"])
+        self.assertEqual(by_slug["tim"]["relations"]["synonyms"][0]["kind"], "manual")
+        self.assertEqual(by_slug["dielectric-fluid"]["relations"]["synonyms"][0]["kind"], "generated")
+        self.assertEqual(by_slug["dielectric-fluid"]["relations"]["tag_on"][0]["provenance"], "free")
+        self.assertIsNone(by_slug["novel-slug"]["relations"]["name_occupied"])
+        self.assertEqual(by_slug["novel-slug"]["relations"]["synonyms"], [])
+        self.assertEqual(by_slug["novel-slug"]["relations"]["tag_on"], [])
+
+        code, cli_res, _ = self._run_cli_json(
+            "candidate-check", str(cand_wiki),
+            "interposer", "tim", "dielectric-fluid", "novel-slug", "--json",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(res, cli_res)
+
+        # Proposal check with verbatim evidence and taxonomy-gap
+        proposal = write(
+            cand_wiki,
+            "proposal.md",
+            """### Candidate Proposal Pool
+1. **`dielectric-fluid`** — 絶縁性流体 [`established`]
+   - **(a) Adjacency**: Extends spray cooling.
+   - **(b) Primary-Source Emergence**: "dielectric fluid droplets" in concepts/spray-cooling.md
+   - **(c) Deduplication**: distinct.
+2. **`near-junction-cooling`** — 近接冷却 [`niche`]
+   - **(a) Adjacency**: Extends cooling.
+   - **(b) Primary-Source Emergence**: taxonomy-gap
+   - **(c) Deduplication**: distinct.
+""",
+        )
+        prop_res = dispatch_tool(
+            "okf_candidate_check",
+            {"wiki": "cand_wiki", "proposal": "cand_wiki/proposal.md"},
+            root=self.base,
+        )
+        prop_by_slug = {c["slug"]: c for c in prop_res["candidates"]}
+        self.assertTrue(prop_by_slug["dielectric-fluid"]["verbatim_check"]["verbatim_found"])
+        self.assertEqual(prop_by_slug["near-junction-cooling"]["verbatim_check"]["parse_status"], "taxonomy-gap")
+        self.assertIsNone(prop_by_slug["near-junction-cooling"]["verbatim_check"]["verbatim_found"])
+
+        code_p, cli_prop_res, _ = self._run_cli_json(
+            "candidate-check", str(cand_wiki), "--proposal", str(proposal), "--json",
+        )
+        self.assertEqual(code_p, 0)
+        self.assertEqual(prop_res, cli_prop_res)
+
+    def test_candidate_check_missing_and_corrupt_synonyms_reported(self):
+        no_syn = self.base / "no_syn_wiki"
+        write(no_syn, "index.md", "# Index\n")
+        write(no_syn, "concepts/a.md", node("type: Concept\ntitle: A\ntags: [a]\n"))
+        res_missing = dispatch_tool(
+            "okf_candidate_check",
+            {"wiki": "no_syn_wiki", "candidates": ["b"]},
+            root=self.base,
+        )
+        self.assertFalse(res_missing["inputs_status"]["synonyms_json_present"])
+        self.assertIn("synonyms.json", res_missing["inputs_status"]["inputs_missing"])
+
+        write(no_syn, "synonyms.json", "{broken")
+        res_corrupt = dispatch_tool(
+            "okf_candidate_check",
+            {"wiki": "no_syn_wiki", "candidates": ["b"]},
+            root=self.base,
+        )
+        self.assertTrue(res_corrupt["inputs_status"]["synonyms_json_present"])
+        self.assertIsNotNone(res_corrupt["inputs_status"]["synonyms_json_parse_error"])
+
+    def test_candidate_check_rejects_bad_arguments_and_escapes(self):
+        prop = write(self.wiki, "proposal.md", "# Empty proposal\n")
+        outside_prop = self.base.parent / "outside_proposal.md"
+        outside_prop.write_text("# Outside\n", encoding="utf-8")
+        try:
+            # Neither candidates nor proposal
+            with self.assertRaises(ToolError):
+                dispatch_tool("okf_candidate_check", {"wiki": "wiki"}, root=self.base)
+            # Empty candidates without proposal
+            with self.assertRaises(ToolError):
+                dispatch_tool(
+                    "okf_candidate_check",
+                    {"wiki": "wiki", "candidates": []},
+                    root=self.base,
+                )
+            # Both candidates and proposal
+            with self.assertRaises(ToolError):
+                dispatch_tool(
+                    "okf_candidate_check",
+                    {"wiki": "wiki", "candidates": ["x"], "proposal": "wiki/proposal.md"},
+                    root=self.base,
+                )
+            # Bad candidates types / traversal
+            for bad in ("not-a-list", [""], ["  "], [123], ["../a"], ["a/b"], ["a\\b"]):
+                with self.assertRaises(ToolError):
+                    dispatch_tool(
+                        "okf_candidate_check",
+                        {"wiki": "wiki", "candidates": bad},
+                        root=self.base,
+                    )
+            # Escaping / missing / invalid proposal path
+            for bad_prop in ("../outside_proposal.md", "/etc/passwd", "wiki/missing.md", "wiki", "   "):
+                with self.assertRaises(ToolError):
+                    dispatch_tool(
+                        "okf_candidate_check",
+                        {"wiki": "wiki", "proposal": bad_prop},
+                        root=self.base,
+                    )
+            self.assertTrue(prop.exists())
+        finally:
+            if outside_prop.exists():
+                outside_prop.unlink()
+
+    # -- U2: okf_links -----------------------------------------------------
+
+    def test_links_schema_contract(self):
+        spec = self._spec("okf_links")
+        schema = spec["inputSchema"]
+        self.assertEqual(schema["required"], ["wiki"])
+        self.assertFalse(schema["additionalProperties"])
+        props = schema["properties"]
+        self.assertEqual(set(props), {"wiki", "from", "direction", "include_admin"})
+        self.assertEqual(props["from"]["type"], "array")
+        self.assertEqual(props["from"]["items"]["type"], "string")
+        self.assertEqual(props["direction"]["enum"], ["out", "in", "both"])
+        self.assertEqual(props["direction"]["default"], "out")
+        self.assertEqual(props["include_admin"]["type"], "boolean")
+        self.assertFalse(props["include_admin"]["default"])
+
+    def test_links_dispatch_and_cli_parity(self):
+        lw = self.base / "links_wiki"
+        write(lw, "index.md", "# Index\n")
+        write(lw, "concepts/hub.md", node(
+            "type: Concept\ntitle: Hub\n",
+            "# Hub\nSee [leaf](leaf.md).\n",
+        ))
+        write(lw, "concepts/leaf.md", node(
+            "type: Concept\ntitle: Leaf\n",
+            "# Leaf\nDetails.\n",
+        ))
+        write(lw, "concepts/orphan.md", node(
+            "type: Concept\ntitle: Orphan\n",
+            "# Orphan\nUnlinked.\n",
+        ))
+        write(lw, "BUILDLOG.md", node(
+            "type: Note\ntitle: Build Log\n",
+            "# Build Log\nMentions [orphan](concepts/orphan.md).\n",
+        ))
+
+        # Default (include_admin=False): BUILDLOG.md excluded
+        res_default = dispatch_tool("okf_links", {"wiki": "links_wiki"}, root=self.base)
+        self.assertEqual(res_default["node_count"], 3)
+        self.assertEqual([x["rel"] for x in res_default["isolated"]], ["concepts/orphan.md"])
+        self.assertNotIn("seed_reachability", res_default)
+
+        code, cli_default, _ = self._run_cli_json("links", str(lw), "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(res_default, cli_default)
+
+        # include_admin=True: BUILDLOG.md included, orphan masked
+        res_admin = dispatch_tool(
+            "okf_links", {"wiki": "links_wiki", "include_admin": True}, root=self.base,
+        )
+        self.assertEqual(res_admin["node_count"], 4)
+        self.assertEqual(res_admin["isolated"], [])
+        code_a, cli_admin, _ = self._run_cli_json(
+            "links", str(lw), "--include-admin", "--json",
+        )
+        self.assertEqual(code_a, 0)
+        self.assertEqual(res_admin, cli_admin)
+
+        # from seeds with direction out / in / both + multiple seeds
+        for direction in ("out", "in", "both"):
+            res_dir = dispatch_tool(
+                "okf_links",
+                {"wiki": "links_wiki", "from": ["leaf"], "direction": direction},
+                root=self.base,
+            )
+            code_d, cli_dir, _ = self._run_cli_json(
+                "links", str(lw), "--from", "leaf", "--direction", direction, "--json",
+            )
+            self.assertEqual(code_d, 0)
+            self.assertEqual(res_dir, cli_dir)
+
+        res_multi = dispatch_tool(
+            "okf_links",
+            {"wiki": "links_wiki", "from": ["hub", "BUILDLOG"]},
+            root=self.base,
+        )
+        code_m, cli_multi, _ = self._run_cli_json(
+            "links", str(lw), "--from", "hub", "--from", "BUILDLOG", "--json",
+        )
+        self.assertEqual(code_m, 0)
+        self.assertEqual(res_multi, cli_multi)
+        self.assertEqual(res_multi["node_count"], 4)  # explicit admin seed kept
+
+        # Empty from: [] behaves like omitted from
+        res_empty_from = dispatch_tool(
+            "okf_links", {"wiki": "links_wiki", "from": []}, root=self.base,
+        )
+        self.assertNotIn("seed_reachability", res_empty_from)
+        self.assertEqual(res_empty_from, res_default)
+
+    def test_links_rejects_bad_arguments(self):
+        with self.assertRaises(ToolError):
+            dispatch_tool("okf_links", {"wiki": "wiki", "from": ["nonexistent"]}, root=self.base)
+        for bad_from in ("a", [1], [""], ["   "]):
+            with self.assertRaises(ToolError):
+                dispatch_tool("okf_links", {"wiki": "wiki", "from": bad_from}, root=self.base)
+        with self.assertRaises(ToolError):
+            dispatch_tool("okf_links", {"wiki": "wiki", "direction": "sideways"}, root=self.base)
+        with self.assertRaises(ToolError):
+            dispatch_tool("okf_links", {"wiki": "wiki", "include_admin": "true"}, root=self.base)
+
+    # -- U3: okf_validate extension ----------------------------------------
+
+    def test_validate_schema_and_backwards_compatibility(self):
+        spec = self._spec("okf_validate")
+        schema = spec["inputSchema"]
+        self.assertEqual(schema["required"], ["wiki"])
+        self.assertFalse(schema["additionalProperties"])
+        props = schema["properties"]
+        self.assertEqual(
+            set(props),
+            {"wiki", "check_evidence", "evidence_dir", "strict_provenance"},
+        )
+        self.assertEqual(props["check_evidence"]["type"], "boolean")
+        self.assertFalse(props["check_evidence"]["default"])
+        self.assertEqual(props["evidence_dir"]["type"], "string")
+        self.assertEqual(props["strict_provenance"]["type"], "boolean")
+        self.assertFalse(props["strict_provenance"]["default"])
+
+        # Backwards compatibility: wiki without evidence/ dir matches validate_wiki(wiki).as_dict()
+        compat_wiki = self.base / "compat_wiki"
+        write(compat_wiki, "index.md", "# Index\n")
+        write(
+            compat_wiki,
+            "concepts/ext.md",
+            node("type: Concept\nbasis: external\nverified_at: '2026-11-19'\n", "# Ext\n"),
+        )
+        via_tool = dispatch_tool("okf_validate", {"wiki": "compat_wiki"}, root=self.base)
+        direct = validate_wiki(compat_wiki).as_dict()
+        self.assertEqual(via_tool, direct)
+        self.assertTrue(via_tool["ok"])
+        self.assertNotIn("evidence", via_tool)
+
+        # strict_provenance=True promotes [P2] to error
+        strict_tool = dispatch_tool(
+            "okf_validate",
+            {"wiki": "compat_wiki", "strict_provenance": True},
+            root=self.base,
+        )
+        code_s, cli_strict, _ = self._run_cli_json(
+            "validate", str(compat_wiki), "--strict-provenance", "--json",
+        )
+        self.assertEqual(code_s, 1)
+        self.assertFalse(strict_tool["ok"])
+        self.assertEqual(strict_tool, cli_strict)
+
+    def test_validate_check_evidence_default_explicit_and_errors(self):
+        ev_wiki = self.base / "ev_wiki"
+        write(ev_wiki, "index.md", "# Index\n")
+        url = "https://example.com/aln.html"
+        write(
+            ev_wiki,
+            "concepts/aln.md",
+            node(
+                "type: Concept\n"
+                "title: 'AlN'\n"
+                "basis: external\n"
+                f"sources: ['web:{url} retrieved=2026-11-19']\n"
+                "verified_at: '2026-11-19'\n",
+                "# AlN\n",
+            ),
+        )
+        default_ev = ev_wiki / "evidence"
+        snaps = default_ev / "snapshots"
+        snaps.mkdir(parents=True)
+        key = snapshot_key_for_url(url)
+        (snaps / f"{key}.html").write_bytes(b"content")
+        (snaps / f"{key}.meta.json").write_text(
+            json.dumps({"url": url, "sha256": "sha256:123"}), encoding="utf-8",
+        )
+        orphan_url = "https://example.com/orphan.html"
+        o_key = snapshot_key_for_url(orphan_url)
+        (snaps / f"{o_key}.html").write_bytes(b"orphan")
+        (snaps / f"{o_key}.meta.json").write_text(
+            json.dumps({"url": orphan_url, "sha256": "sha256:456", "orphan_reason": "no numbers"}),
+            encoding="utf-8",
+        )
+
+        # Default <wiki>/evidence
+        res_def = dispatch_tool(
+            "okf_validate",
+            {"wiki": "ev_wiki", "check_evidence": True},
+            root=self.base,
+        )
+        code_def, cli_def, _ = self._run_cli_json(
+            "validate", str(ev_wiki), "--check-evidence", "--evidence-dir", str(default_ev), "--json",
+        )
+        self.assertEqual(code_def, 0)
+        self.assertTrue(res_def["ok"])
+        self.assertIn("evidence", res_def)
+        self.assertEqual(res_def, cli_def)
+
+        # Explicit confined evidence_dir
+        shared_ev = self.base / "shared_ev"
+        (shared_ev / "snapshots").mkdir(parents=True)
+        (shared_ev / "snapshots" / f"{key}.html").write_bytes(b"content")
+        (shared_ev / "snapshots" / f"{key}.meta.json").write_text(
+            json.dumps({"url": url, "sha256": "sha256:123"}), encoding="utf-8",
+        )
+        res_exp = dispatch_tool(
+            "okf_validate",
+            {"wiki": "ev_wiki", "check_evidence": True, "evidence_dir": "shared_ev"},
+            root=self.base,
+        )
+        code_exp, cli_exp, _ = self._run_cli_json(
+            "validate", str(ev_wiki), "--check-evidence", "--evidence-dir", str(shared_ev), "--json",
+        )
+        self.assertEqual(code_exp, 0)
+        self.assertEqual(res_exp, cli_exp)
+
+        # check_evidence + strict_provenance with missing snapshot -> [E1] error
+        write(
+            ev_wiki,
+            "concepts/missing.md",
+            node(
+                "type: Concept\ntitle: Missing\nbasis: external\n"
+                "sources: ['web:https://example.com/missing.html retrieved=2026-11-19']\n"
+                "verified_at: '2026-11-19'\n",
+                "# Missing\n",
+            ),
+        )
+        res_fail = dispatch_tool(
+            "okf_validate",
+            {"wiki": "ev_wiki", "check_evidence": True, "strict_provenance": True},
+            root=self.base,
+        )
+        code_f, cli_fail, _ = self._run_cli_json(
+            "validate", str(ev_wiki), "--check-evidence",
+            "--evidence-dir", str(default_ev), "--strict-provenance", "--json",
+        )
+        self.assertEqual(code_f, 1)
+        self.assertFalse(res_fail["ok"])
+        self.assertEqual(res_fail, cli_fail)
+
+        # Error cases
+        # 1. check_evidence=True when default <wiki>/evidence does not exist
+        with self.assertRaises(ToolError):
+            dispatch_tool(
+                "okf_validate", {"wiki": "wiki", "check_evidence": True}, root=self.base,
+            )
+        # 2. evidence_dir escaping root (both check_evidence=True and False)
+        outside_ev = self.base.parent / "outside_ev"
+        outside_ev.mkdir(exist_ok=True)
+        try:
+            for ce in (False, True):
+                with self.assertRaises(ToolError):
+                    dispatch_tool(
+                        "okf_validate",
+                        {"wiki": "wiki", "check_evidence": ce, "evidence_dir": "../outside_ev"},
+                        root=self.base,
+                    )
+                with self.assertRaises(ToolError):
+                    dispatch_tool(
+                        "okf_validate",
+                        {"wiki": "wiki", "check_evidence": ce, "evidence_dir": "/tmp/outside_ev"},
+                        root=self.base,
+                    )
+            # 3. symlink <wiki>/evidence escaping root
+            sym_wiki = self.base / "sym_wiki"
+            write(sym_wiki, "index.md", "# Index\n")
+            os.symlink(outside_ev, sym_wiki / "evidence")
+            with self.assertRaises(ToolError) as ctx:
+                dispatch_tool(
+                    "okf_validate",
+                    {"wiki": "sym_wiki", "check_evidence": True},
+                    root=self.base,
+                )
+            self.assertIn("escapes", str(ctx.exception))
+        finally:
+            if outside_ev.exists():
+                outside_ev.rmdir()
+
+        # 4. nonexistent evidence_dir, file as evidence_dir, whitespace, bad bools
+        for bad_ev in ("missing_ev", "wiki/a.md", "  "):
+            with self.assertRaises(ToolError):
+                dispatch_tool(
+                    "okf_validate",
+                    {"wiki": "wiki", "check_evidence": True, "evidence_dir": bad_ev},
+                    root=self.base,
+                )
+        with self.assertRaises(ToolError):
+            dispatch_tool(
+                "okf_validate", {"wiki": "wiki", "check_evidence": "true"}, root=self.base,
+            )
+        with self.assertRaises(ToolError):
+            dispatch_tool(
+                "okf_validate", {"wiki": "wiki", "strict_provenance": 1}, root=self.base,
+            )
+
+    # -- U4: okf_search verification ---------------------------------------
+
+    def test_search_type_scope_expand_cli_parity_and_errors(self):
+        sw = self.base / "search_wiki"
+        write(sw, "index.md", "# Index\n")
+        write(
+            sw,
+            "concepts/c_tax.md",
+            node("type: Concept\nscope: taxonomy\ntitle: Glass Tax\n", "# Glass Tax\nGlassy phase.\n"),
+        )
+        write(
+            sw,
+            "concepts/c_gotcha.md",
+            node("type: Concept\nscope: gotchas\ntitle: Glass Gotcha\n", "# Glass Gotcha\nGlassy failure.\n"),
+        )
+        write(
+            sw,
+            "patents/p_gotcha.md",
+            node("type: Patent\nscope: gotchas\ntitle: Glass Patent\n", "# Glass Patent\nGlassy patent.\n"),
+        )
+        write(sw, "synonyms.json", json.dumps({"groups": [["vitreous", "glassy"]]}))
+
+        # Combined type + scope + expand=True
+        hits = dispatch_tool(
+            "okf_search",
+            {
+                "wiki": "search_wiki",
+                "query": "vitreous",
+                "type": "concept",
+                "scope": "gotchas",
+                "expand": True,
+            },
+            root=self.base,
+        )
+        self.assertEqual([h["node"] for h in hits], ["concepts/c_gotcha.md"])
+
+        code, cli_hits, _ = self._run_cli_json(
+            "search", str(sw), "vitreous", "--type", "concept", "--scope", "gotchas", "--expand", "--json",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(hits, cli_hits)
+
+        # Comma-separated scope="taxonomy,gotchas" with type="concept"
+        hits_multi = dispatch_tool(
+            "okf_search",
+            {
+                "wiki": "search_wiki",
+                "query": "vitreous",
+                "type": "concept",
+                "scope": "taxonomy,gotchas",
+                "expand": True,
+            },
+            root=self.base,
+        )
+        self.assertEqual(
+            {h["node"] for h in hits_multi},
+            {"concepts/c_tax.md", "concepts/c_gotcha.md"},
+        )
+        code_m, cli_multi, _ = self._run_cli_json(
+            "search", str(sw), "vitreous",
+            "--type", "concept", "--scope", "taxonomy", "--scope", "gotchas", "--expand", "--json",
+        )
+        self.assertEqual(code_m, 0)
+        self.assertEqual(hits_multi, cli_multi)
+
+        # Error cases
+        with self.assertRaises(ToolError):
+            dispatch_tool(
+                "okf_search",
+                {"wiki": "search_wiki", "query": "glassy", "scope": "bogus"},
+                root=self.base,
+            )
+        with self.assertRaises(ToolError):
+            dispatch_tool(
+                "okf_search",
+                {"wiki": "wiki", "query": "amorphous", "expand": True},
+                root=self.base,
+            )
+        with self.assertRaises(ToolError):
+            dispatch_tool(
+                "okf_search",
+                {"wiki": "search_wiki", "query": "glassy", "expand": "true"},
+                root=self.base,
+            )
+        with self.assertRaises(ToolError):
+            dispatch_tool(
+                "okf_search",
+                {"wiki": "search_wiki", "query": "glassy", "type": ["concept"]},
+                root=self.base,
+            )
+        with self.assertRaises(ToolError):
+            dispatch_tool(
+                "okf_search",
+                {"wiki": "search_wiki", "query": "glassy", "scope": ["gotchas"]},
+                root=self.base,
+            )
 
 
 if __name__ == "__main__":
