@@ -237,10 +237,10 @@ class ClaimsCliAndSkillTests(unittest.TestCase):
         self.assertEqual(code2, 2)
         self.assertIn("error:", err2)
 
-    def test_claims_not_in_okf_schema(self):
-        """claims is not exposed in okf schema / MCP TOOL_SPECS."""
+    def test_claims_in_okf_schema(self):
+        """okf_claims is exposed in okf schema / MCP TOOL_SPECS."""
         tool_names = {spec["name"] for spec in TOOL_SPECS}
-        self.assertNotIn("okf_claims", tool_names)
+        self.assertIn("okf_claims", tool_names)
         self.assertNotIn("claims", tool_names)
 
     def test_kb_audit_skill_discovered_and_valid(self):

@@ -55,10 +55,10 @@ class McpServerTests(unittest.TestCase):
     def test_tools_list_and_call(self):
         listed = self.request("tools/list")
         tools = listed["result"]["tools"]
-        self.assertEqual(len(tools), 9)
+        self.assertEqual(len(tools), 10)
         self.assertEqual({tool["name"] for tool in tools}, {
             "okf_search", "okf_context", "okf_traverse", "okf_validate",
-            "okf_candidate_check", "okf_links",
+            "okf_candidate_check", "okf_links", "okf_claims",
             "okf_stats", "okf_index", "okf_ingest_epo",
         })
         called = self.request("tools/call", {
@@ -126,7 +126,7 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(responses[0]["id"], "a")
         self.assertEqual(responses[0]["result"], {})
         self.assertEqual(responses[1]["error"]["code"], -32700)
-        self.assertEqual(len(responses[2]["result"]["tools"]), 9)
+        self.assertEqual(len(responses[2]["result"]["tools"]), 10)
 
     def test_search_schema_declares_filter_params(self):
         listed = self.request("tools/list")
@@ -388,6 +388,42 @@ class McpServerTests(unittest.TestCase):
         })
         self.assertTrue(err_resp["result"]["isError"])
         self.assertIn("escapes", err_resp["result"]["content"][0]["text"])
+
+    def test_claims_mcp_call_and_errors(self):
+        write(self.wiki, "concepts/alpha.md", node(
+            "type: Concept\ntitle: Alpha\n",
+            "# Alpha\nYield is 42 MPa. Density is 7.8 g/cm3.\n",
+        ))
+        write(self.wiki, "concepts/beta.md", node(
+            "type: Concept\ntitle: Beta\n",
+            "# Beta\nThermal conductivity is 120 W/mK.\n",
+        ))
+
+        resp = self.request("tools/call", {
+            "name": "okf_claims",
+            "arguments": {"wiki": "wiki", "sample": 2, "seed": 7},
+        })
+        self.assertFalse(resp["result"]["isError"])
+        data = json.loads(resp["result"]["content"][0]["text"])
+        self.assertEqual(data["total_claims"], 3)
+        self.assertEqual(data["returned"], 2)
+        self.assertEqual(data["seed"], 7)
+
+        filtered = self.request("tools/call", {
+            "name": "okf_claims",
+            "arguments": {"wiki": "wiki", "notes": ["beta"]},
+        })
+        self.assertFalse(filtered["result"]["isError"])
+        fdata = json.loads(filtered["result"]["content"][0]["text"])
+        self.assertEqual(fdata["total_claims"], 1)
+        self.assertEqual(fdata["claims"][0]["note"], "concepts/beta.md")
+
+        err_resp = self.request("tools/call", {
+            "name": "okf_claims",
+            "arguments": {"wiki": "wiki", "sample": -1},
+        })
+        self.assertTrue(err_resp["result"]["isError"])
+        self.assertIn("non-negative", err_resp["result"]["content"][0]["text"])
 
 
 if __name__ == "__main__":

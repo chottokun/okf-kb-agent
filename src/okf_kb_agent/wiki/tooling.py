@@ -311,6 +311,44 @@ TOOL_SPECS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "okf_claims",
+        "description": (
+            "Extract numeric claims from concepts/*.md with optional "
+            "deterministic sampling and note filtering. Performs extraction "
+            "and deterministic sampling only; returns no verdicts "
+            "(supports/contradicts) or weights."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wiki": {"type": "string", "description": "Wiki root directory."},
+                "sample": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": (
+                        "Optional maximum number of claims to return via "
+                        "deterministic random.Random(seed).shuffle sampling."
+                    ),
+                },
+                "seed": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Deterministic PRNG seed for sampling.",
+                },
+                "notes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional concept note filter(s) matching slug, "
+                        "filename, or wiki-relative path (same as okf claims --note)."
+                    ),
+                },
+            },
+            "required": ["wiki"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "okf_stats",
         "description": "Return concept, link, scope and pattern statistics.",
         "inputSchema": {
@@ -582,6 +620,31 @@ def dispatch_tool(name: str, arguments: dict[str, Any],
             direction=direction,
             exclude_nodes=exclude_nodes,
         ).as_dict()
+
+    if name == "okf_claims":
+        from .claims import extract_claims
+
+        raw_sample = arguments.get("sample")
+        if raw_sample is None:
+            sample = None
+        elif isinstance(raw_sample, bool) or not isinstance(raw_sample, int):
+            raise ToolError("sample must be an integer")
+        elif raw_sample < 0:
+            raise ToolError("sample must be non-negative")
+        else:
+            sample = raw_sample
+
+        raw_seed = arguments.get("seed", 0)
+        if isinstance(raw_seed, bool) or not isinstance(raw_seed, int):
+            raise ToolError("seed must be an integer")
+
+        notes = _optional_string_list(arguments, "notes")
+        return extract_claims(
+            wiki,
+            sample=sample,
+            seed=raw_seed,
+            notes=notes,
+        ).to_dict()
 
     if name == "okf_stats":
         return wiki_stats(wiki)
