@@ -898,6 +898,117 @@ class ToolingTests(unittest.TestCase):
                 root=self.base,
             )
 
+    # -- Phase C: okf_claims -----------------------------------------------
+
+    def test_claims_schema_contract(self):
+        spec = self._spec("okf_claims")
+        desc = spec["description"].lower()
+        self.assertIn("supports", desc)
+        self.assertIn("contradicts", desc)
+        self.assertIn("no verdicts", desc)
+        schema = spec["inputSchema"]
+        self.assertEqual(schema["required"], ["wiki"])
+        self.assertFalse(schema["additionalProperties"])
+        props = schema["properties"]
+        self.assertEqual(set(props), {"wiki", "sample", "seed", "notes"})
+        self.assertEqual(props["sample"]["type"], "integer")
+        self.assertEqual(props["sample"]["minimum"], 0)
+        self.assertEqual(props["seed"]["type"], "integer")
+        self.assertEqual(props["seed"]["default"], 0)
+        self.assertEqual(props["notes"]["type"], "array")
+        self.assertEqual(props["notes"]["items"]["type"], "string")
+
+    def _make_claims_wiki(self) -> Path:
+        cw = self.base / "claims_wiki"
+        write(cw, "index.md", "# Index\n")
+        write(cw, "concepts/alpha.md", node(
+            "type: Concept\ntitle: Alpha\nsources: ['paper:doi:10.1/a']\n",
+            "# Alpha\nStress reaches 120 MPa. Strain is 2.5%.\n",
+        ))
+        write(cw, "concepts/beta.md", node(
+            "type: Concept\ntitle: Beta\n",
+            "# Beta\nCycle count is 5000. Thickness is 12 um.\n",
+        ))
+        write(cw, "concepts/gamma.md", node(
+            "type: Concept\ntitle: Gamma\n",
+            "# Gamma\nTemperature is 450 K.\n",
+        ))
+        return cw
+
+    def test_claims_dispatch_cli_parity_and_determinism(self):
+        cw = self._make_claims_wiki()
+
+        res_all = dispatch_tool("okf_claims", {"wiki": "claims_wiki"}, root=self.base)
+        code, cli_all, _ = self._run_cli_json("claims", str(cw), "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(res_all, cli_all)
+        self.assertEqual(res_all["total_claims"], 5)
+        self.assertEqual(res_all["returned"], 5)
+        self.assertEqual(res_all["seed"], 0)
+
+        # Deterministic sampling with seed matches CLI and repeats identically
+        s1 = dispatch_tool(
+            "okf_claims", {"wiki": "claims_wiki", "sample": 3, "seed": 42}, root=self.base,
+        )
+        s2 = dispatch_tool(
+            "okf_claims", {"wiki": "claims_wiki", "sample": 3, "seed": 42}, root=self.base,
+        )
+        code_s, cli_s, _ = self._run_cli_json(
+            "claims", str(cw), "--sample", "3", "--seed", "42", "--json",
+        )
+        self.assertEqual(code_s, 0)
+        self.assertEqual(s1, s2)
+        self.assertEqual(s1, cli_s)
+        self.assertEqual(s1["total_claims"], 5)
+        self.assertEqual(s1["returned"], 3)
+        self.assertEqual(s1["seed"], 42)
+
+        # sample=0 returns zero claims while reporting total_claims
+        s0 = dispatch_tool(
+            "okf_claims", {"wiki": "claims_wiki", "sample": 0}, root=self.base,
+        )
+        self.assertEqual(s0["total_claims"], 5)
+        self.assertEqual(s0["returned"], 0)
+        self.assertEqual(s0["claims"], [])
+
+    def test_claims_notes_filter_and_errors(self):
+        cw = self._make_claims_wiki()
+
+        # slug, filename, and relative path all match
+        res_notes = dispatch_tool(
+            "okf_claims",
+            {"wiki": "claims_wiki", "notes": ["alpha", "beta.md", "concepts/gamma.md"]},
+            root=self.base,
+        )
+        self.assertEqual(res_notes["total_claims"], 5)
+
+        res_single = dispatch_tool(
+            "okf_claims",
+            {"wiki": "claims_wiki", "notes": ["beta.md"]},
+            root=self.base,
+        )
+        code_n, cli_n, _ = self._run_cli_json(
+            "claims", str(cw), "--note", "beta.md", "--json",
+        )
+        self.assertEqual(code_n, 0)
+        self.assertEqual(res_single, cli_n)
+        self.assertEqual({c["note"] for c in res_single["claims"]}, {"concepts/beta.md"})
+
+        # Error cases
+        for bad_args in (
+            {"wiki": "claims_wiki", "sample": -1},
+            {"wiki": "claims_wiki", "sample": True},
+            {"wiki": "claims_wiki", "sample": "2"},
+            {"wiki": "claims_wiki", "seed": False},
+            {"wiki": "claims_wiki", "seed": "0"},
+            {"wiki": "claims_wiki", "notes": "alpha"},
+            {"wiki": "claims_wiki", "notes": [""]},
+            {"wiki": "../outside"},
+        ):
+            with self.subTest(bad_args=bad_args):
+                with self.assertRaises(ToolError):
+                    dispatch_tool("okf_claims", bad_args, root=self.base)
+
 
 if __name__ == "__main__":
     unittest.main()

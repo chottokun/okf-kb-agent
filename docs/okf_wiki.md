@@ -582,6 +582,7 @@ OKF_MCP_TOKEN="$(openssl rand -hex 24)" \
 | `okf_validate` | 構造・リンク・来歴・証跡検証（`strict_provenance` / `check_evidence` / `evidence_dir`） | なし |
 | `okf_candidate_check` | 候補スラッグの重複・同義語・タグ来歴・提案の逐語証跡検査 | なし |
 | `okf_links` | リンク到達性・孤立/無入次数/無出次数・連結成分診断 | なし |
+| `okf_claims` | `concepts/*.md` からの数値主張抽出と決定的サンプリング（`sample` / `seed` / `notes`） | なし |
 | `okf_stats` | 件数・Pattern 判定 | なし |
 | `okf_index` | 索引の検査／再生成 | あり |
 | `okf_ingest_epo` | EPO 取り込み | あり |
@@ -622,6 +623,7 @@ curl -s -H "Authorization: Bearer $OKF_MCP_TOKEN" \
 
 - `--root` は許可ルート。`wiki` 引数に加え、`proposal`（`okf_candidate_check`）や `evidence_dir`（`okf_validate`、`check_evidence=true` 時の既定は `<wiki>/evidence`）も解決後に `--root` 配下でなければ拒否。
 - `okf_candidate_check` は中立的な事実関係（`name_occupied` / `synonyms` / `tag_on` / `verbatim_check`）のみを返し、`fail_on` や合否判定・重みづけは持たない。
+- `okf_claims` は抽出と決定的サンプリング（`random.Random(seed).shuffle`）のみを行い、判定（`supports` / `contradicts` 等）や重みづけは返さない。
 - `okf_ingest_epo` の `offline` は既定 `true`。ネットワーク取得は
   EPO スキルがキャッシュ欠損を確認した後だけ `false` にする。
 - `okf_search` / `okf_context` は `backend=qdrant` と
