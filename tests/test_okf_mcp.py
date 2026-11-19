@@ -55,9 +55,10 @@ class McpServerTests(unittest.TestCase):
     def test_tools_list_and_call(self):
         listed = self.request("tools/list")
         tools = listed["result"]["tools"]
-        self.assertEqual(len(tools), 7)
+        self.assertEqual(len(tools), 9)
         self.assertEqual({tool["name"] for tool in tools}, {
             "okf_search", "okf_context", "okf_traverse", "okf_validate",
+            "okf_candidate_check", "okf_links",
             "okf_stats", "okf_index", "okf_ingest_epo",
         })
         called = self.request("tools/call", {
@@ -125,7 +126,7 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(responses[0]["id"], "a")
         self.assertEqual(responses[0]["result"], {})
         self.assertEqual(responses[1]["error"]["code"], -32700)
-        self.assertEqual(len(responses[2]["result"]["tools"]), 7)
+        self.assertEqual(len(responses[2]["result"]["tools"]), 9)
 
     def test_search_schema_declares_filter_params(self):
         listed = self.request("tools/list")
@@ -255,6 +256,138 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(bd["total"], hit["score"])
         self.assertIn("gate", bd)
         self.assertIn("rule", bd["gate"])
+
+    def test_search_combined_type_scope_expand_and_errors(self):
+        write(self.wiki, "synonyms.json", json.dumps({"groups": [["vitreous", "glassy"]]}))
+        write(self.wiki, "concepts/g1.md", node(
+            "type: Concept\nscope: gotchas\ntitle: Glassy Trap\n",
+            "# Glassy Trap\nGlassy brittleness.\n"))
+        write(self.wiki, "patents/p1.md", node(
+            "type: Patent\nscope: gotchas\ntitle: Glassy Patent\n",
+            "# Glassy Patent\nGlassy material.\n"))
+        resp = self.request("tools/call", {
+            "name": "okf_search",
+            "arguments": {
+                "wiki": "wiki",
+                "query": "vitreous",
+                "type": "concept",
+                "scope": "gotchas",
+                "expand": True,
+            },
+        })
+        self.assertFalse(resp["result"]["isError"])
+        hits = json.loads(resp["result"]["content"][0]["text"])
+        self.assertEqual([h["node"] for h in hits], ["concepts/g1.md"])
+
+        bad_scope = self.request("tools/call", {
+            "name": "okf_search",
+            "arguments": {"wiki": "wiki", "query": "vitreous", "scope": "bogus"},
+        })
+        self.assertTrue(bad_scope["result"]["isError"])
+        self.assertIn("unknown scope", bad_scope["result"]["content"][0]["text"])
+
+    def test_candidate_check_mcp_call_and_errors(self):
+        write(self.wiki, "concepts/interposer.md", node(
+            "type: Concept\ntitle: Interposer\ntags: [interposer, tsv]\n",
+            "# Interposer\nThrough-silicon via carrier.\n"))
+        write(self.wiki, "synonyms.json", json.dumps({"groups": [], "manual_groups": [], "generated_groups": []}))
+        write(self.wiki, "proposal.md", (
+            "1. **`tsv`** — TSV [`established`]\n"
+            '   - **(b) Primary-Source Emergence**: "Through-silicon via" in concepts/interposer.md\n'
+        ))
+        resp = self.request("tools/call", {
+            "name": "okf_candidate_check",
+            "arguments": {"wiki": "wiki", "candidates": ["interposer", "tsv"]},
+        })
+        self.assertFalse(resp["result"]["isError"])
+        payload = json.loads(resp["result"]["content"][0]["text"])
+        self.assertEqual(payload["summary"]["name_occupied_count"], 1)
+        self.assertEqual(payload["summary"]["tag_relation_count"], 2)
+
+        prop_resp = self.request("tools/call", {
+            "name": "okf_candidate_check",
+            "arguments": {"wiki": "wiki", "proposal": "wiki/proposal.md"},
+        })
+        self.assertFalse(prop_resp["result"]["isError"])
+        prop_payload = json.loads(prop_resp["result"]["content"][0]["text"])
+        self.assertTrue(prop_payload["candidates"][0]["verbatim_check"]["verbatim_found"])
+
+        err_resp = self.request("tools/call", {
+            "name": "okf_candidate_check",
+            "arguments": {"wiki": "wiki", "proposal": "../outside.md"},
+        })
+        self.assertTrue(err_resp["result"]["isError"])
+        self.assertIn("escapes", err_resp["result"]["content"][0]["text"])
+
+    def test_links_mcp_call_and_errors(self):
+        write(self.wiki, "concepts/hub.md", node(
+            "type: Concept\ntitle: Hub\n", "# Hub\n[leaf](leaf.md)\n"))
+        write(self.wiki, "concepts/leaf.md", node(
+            "type: Concept\ntitle: Leaf\n", "# Leaf\n"))
+        write(self.wiki, "BUILDLOG.md", node(
+            "type: Note\ntitle: Log\n", "# Log\n[a](../a.md)\n"))
+
+        resp = self.request("tools/call", {
+            "name": "okf_links",
+            "arguments": {"wiki": "wiki", "from": ["hub"], "direction": "out"},
+        })
+        self.assertFalse(resp["result"]["isError"])
+        data = json.loads(resp["result"]["content"][0]["text"])
+        self.assertEqual(data["node_count"], 3)  # a.md, hub.md, leaf.md (BUILDLOG excluded)
+        self.assertEqual(
+            [x["rel"] for x in data["seed_reachability"]["reachable"]],
+            ["concepts/hub.md", "concepts/leaf.md"],
+        )
+
+        err_resp = self.request("tools/call", {
+            "name": "okf_links",
+            "arguments": {"wiki": "wiki", "from": ["missing-seed"]},
+        })
+        self.assertTrue(err_resp["result"]["isError"])
+        self.assertIn("seed concept not found", err_resp["result"]["content"][0]["text"])
+
+    def test_validate_extended_mcp_call_and_errors(self):
+        from okf_kb_agent.wiki.verify import snapshot_key_for_url
+
+        url = "https://example.com/spec.html"
+        write(self.wiki, "concepts/ext.md", node(
+            "type: Concept\ntitle: Ext\nbasis: external\n"
+            f"sources: ['web:{url} retrieved=2026-11-19']\n"
+            "verified_at: '2026-11-19'\n",
+            "# Ext\n",
+        ))
+        key = snapshot_key_for_url(url)
+        snaps = self.wiki / "evidence" / "snapshots"
+        snaps.mkdir(parents=True)
+        (snaps / f"{key}.html").write_bytes(b"ok")
+        (snaps / f"{key}.meta.json").write_text(
+            json.dumps({"url": url, "sha256": "sha256:abc"}), encoding="utf-8",
+        )
+
+        resp = self.request("tools/call", {
+            "name": "okf_validate",
+            "arguments": {
+                "wiki": "wiki",
+                "check_evidence": True,
+                "strict_provenance": True,
+            },
+        })
+        self.assertFalse(resp["result"]["isError"])
+        data = json.loads(resp["result"]["content"][0]["text"])
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["evidence"]["referenced_count"], 1)
+        self.assertEqual(data["evidence"]["missing_count"], 0)
+
+        err_resp = self.request("tools/call", {
+            "name": "okf_validate",
+            "arguments": {
+                "wiki": "wiki",
+                "check_evidence": True,
+                "evidence_dir": "../outside",
+            },
+        })
+        self.assertTrue(err_resp["result"]["isError"])
+        self.assertIn("escapes", err_resp["result"]["content"][0]["text"])
 
 
 if __name__ == "__main__":

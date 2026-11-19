@@ -207,10 +207,105 @@ TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "okf_validate",
-        "description": "Validate frontmatter, links, orphans and index structure.",
+        "description": (
+            "Validate frontmatter, links, orphans, index structure, "
+            "provenance rules, and optional evidence snapshots."),
         "inputSchema": {
             "type": "object",
-            "properties": {"wiki": {"type": "string"}},
+            "properties": {
+                "wiki": {"type": "string", "description": "Wiki root directory."},
+                "check_evidence": {
+                    "type": "boolean",
+                    "description": (
+                        "Check evidence snapshot consistency and orphan "
+                        "snapshots (same as okf validate --check-evidence)."
+                    ),
+                    "default": False,
+                },
+                "evidence_dir": {
+                    "type": "string",
+                    "description": (
+                        "Evidence directory path confined to the server root "
+                        "(default when check_evidence is true: <wiki>/evidence)."
+                    ),
+                },
+                "strict_provenance": {
+                    "type": "boolean",
+                    "description": (
+                        "Promote provenance/evidence self-contradictions "
+                        "(P2, P4, P5, E1, P9) to errors "
+                        "(same as okf validate --strict-provenance)."
+                    ),
+                    "default": False,
+                },
+            },
+            "required": ["wiki"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "okf_candidate_check",
+        "description": (
+            "Inspect candidate concepts for existing name occupation, synonym "
+            "membership, tag provenance, and optional proposal verbatim "
+            "evidence. Returns neutral factual relations without verdicts or "
+            "weights."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wiki": {"type": "string", "description": "Wiki root directory."},
+                "candidates": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Candidate concept slug(s) to inspect directly "
+                        "(mutually exclusive with proposal)."
+                    ),
+                },
+                "proposal": {
+                    "type": "string",
+                    "description": (
+                        "Optional proposal Markdown file path confined to the "
+                        "server root (same as okf candidate-check --proposal; "
+                        "mutually exclusive with candidates)."
+                    ),
+                },
+            },
+            "required": ["wiki"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "okf_links",
+        "description": (
+            "Diagnose link reachability, isolated/zero-inbound/zero-outbound "
+            "concepts, and weakly connected components."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wiki": {"type": "string", "description": "Wiki root directory."},
+                "from": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional seed concept path(s) or slug(s) to test "
+                        "reachability from (same as okf links --from)."
+                    ),
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["out", "in", "both"],
+                    "default": "out",
+                },
+                "include_admin": {
+                    "type": "boolean",
+                    "description": (
+                        "Include admin/aggregate notes (BUILDLOG, SUMMARY, "
+                        "index); default false mirrors okf links --no-admin."
+                    ),
+                    "default": False,
+                },
+            },
             "required": ["wiki"],
             "additionalProperties": False,
         },
@@ -330,6 +425,10 @@ def dispatch_tool(name: str, arguments: dict[str, Any],
         if doc_types:
             search_kwargs["doc_type"] = doc_types
         if scopes:
+            allowed = {"taxonomy", "workflow", "synergistic", "gotchas"}
+            unknown = sorted(set(scopes) - allowed)
+            if unknown:
+                raise ToolError(f"unknown scope(s): {', '.join(unknown)}")
             search_kwargs["scope"] = scopes
         if include_admin:
             search_kwargs["include_admin"] = include_admin
@@ -405,7 +504,82 @@ def dispatch_tool(name: str, arguments: dict[str, Any],
     if name == "okf_validate":
         from .validate import validate_wiki
 
-        return validate_wiki(wiki).as_dict()
+        strict_provenance = _boolean(arguments, "strict_provenance", False)
+        check_evidence = _boolean(arguments, "check_evidence", False)
+        evidence_dir = _resolve_optional_path(
+            arguments, "evidence_dir", root_path, kind="existing_dir"
+        )
+        if check_evidence and evidence_dir is None:
+            evidence_dir = _resolve_confined_path(
+                str(wiki / "evidence"), root_path, key="evidence_dir"
+            )
+            if not evidence_dir.is_dir():
+                raise ToolError(
+                    f"evidence_dir directory does not exist: {evidence_dir}"
+                )
+        return validate_wiki(
+            wiki,
+            strict_provenance=strict_provenance,
+            check_evidence=check_evidence,
+            evidence_dir=evidence_dir,
+        ).as_dict()
+
+    if name == "okf_candidate_check":
+        from .candidate import CandidateChecker
+
+        candidates = _optional_string_list(arguments, "candidates")
+        if candidates is not None:
+            for slug in candidates:
+                if "/" in slug or "\\" in slug or ".." in slug:
+                    raise ToolError(f"invalid candidate slug: {slug}")
+        proposal_path = _resolve_optional_path(
+            arguments, "proposal", root_path, kind="existing_file"
+        )
+        if bool(candidates) == (proposal_path is not None):
+            raise ToolError("pass exactly one of candidates or proposal")
+
+        checker = CandidateChecker(wiki)
+        if proposal_path is not None:
+            result = checker.check_proposal(proposal_path)
+        else:
+            result = checker.check_candidates(candidates or [])
+        return result.to_dict()
+
+    if name == "okf_links":
+        from .graph import build_graph
+        from .search import is_admin_file
+
+        raw_seeds = _optional_string_list(arguments, "from")
+        direction = _choice(
+            arguments, "direction", ("out", "in", "both"), "out"
+        )
+        include_admin = _boolean(arguments, "include_admin", False)
+
+        graph = build_graph(wiki)
+        resolved_seeds: list[str] | None = None
+        if raw_seeds:
+            resolved_seeds = []
+            for seed in raw_seeds:
+                try:
+                    resolved = graph.resolve_seed(seed)
+                except KeyError as exc:
+                    raise ToolError(f"seed concept not found: {seed}") from exc
+                if resolved not in resolved_seeds:
+                    resolved_seeds.append(resolved)
+
+        exclude_nodes = (
+            set()
+            if include_admin
+            else {rel for rel in graph.nodes if is_admin_file(rel)}
+        )
+        if resolved_seeds:
+            exclude_nodes -= set(resolved_seeds)
+
+        return graph.diagnose_reachability(
+            seeds=resolved_seeds,
+            direction=direction,
+            exclude_nodes=exclude_nodes,
+        ).as_dict()
 
     if name == "okf_stats":
         return wiki_stats(wiki)
@@ -552,6 +726,9 @@ def _resolve_optional_path(
     if kind == "existing_file":
         if not candidate.is_file():
             raise ToolError(f"{key} file does not exist: {candidate}")
+    elif kind == "existing_dir":
+        if not candidate.is_dir():
+            raise ToolError(f"{key} directory does not exist: {candidate}")
     elif kind == "file_or_new":
         if candidate.exists() and candidate.is_dir():
             raise ToolError(f"{key} must not be a directory: {candidate}")
@@ -577,6 +754,19 @@ def _optional_string(arguments: dict[str, Any], key: str) -> str | None:
     if not isinstance(value, str):
         raise ToolError(f"{key} must be a string")
     return value
+
+
+def _optional_string_list(
+    arguments: dict[str, Any], key: str
+) -> list[str] | None:
+    value = arguments.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item.strip() for item in value
+    ):
+        raise ToolError(f"{key} must be an array of non-empty strings")
+    return [item.strip() for item in value]
 
 
 def _string_filters(arguments: dict[str, Any], key: str) -> list[str]:
