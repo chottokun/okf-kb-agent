@@ -258,16 +258,16 @@ TOOL_SPECS: list[dict[str, Any]] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Candidate concept slug(s) to inspect directly "
-                        "(mutually exclusive with proposal)."
+                        "Candidate concept slug(s) to inspect directly."
                     ),
                 },
                 "proposal": {
                     "type": "string",
                     "description": (
                         "Optional proposal Markdown file path confined to the "
-                        "server root (same as okf candidate-check --proposal; "
-                        "mutually exclusive with candidates)."
+                        "server root; parsed for candidates and verbatim "
+                        "evidence when candidates is omitted, or recorded as "
+                        "inputs_status context when combined with candidates."
                     ),
                 },
             },
@@ -535,14 +535,16 @@ def dispatch_tool(name: str, arguments: dict[str, Any],
         proposal_path = _resolve_optional_path(
             arguments, "proposal", root_path, kind="existing_file"
         )
-        if bool(candidates) == (proposal_path is not None):
-            raise ToolError("pass exactly one of candidates or proposal")
-
-        checker = CandidateChecker(wiki)
-        if proposal_path is not None:
+        if candidates:
+            checker = CandidateChecker(wiki)
+            result = checker.check_candidates(
+                candidates, proposal_path=proposal_path
+            )
+        elif proposal_path is not None:
+            checker = CandidateChecker(wiki)
             result = checker.check_proposal(proposal_path)
         else:
-            result = checker.check_candidates(candidates or [])
+            raise ToolError("pass candidates or proposal")
         return result.to_dict()
 
     if name == "okf_links":
