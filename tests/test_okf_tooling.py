@@ -410,46 +410,54 @@ class ToolingTests(unittest.TestCase):
 
     def test_candidate_check_rejects_bad_arguments_and_escapes(self):
         prop = write(self.wiki, "proposal.md", "# Empty proposal\n")
-        outside_prop = self.base.parent / "outside_proposal.md"
+        # Neither candidates nor proposal
+        with self.assertRaises(ToolError):
+            dispatch_tool("okf_candidate_check", {"wiki": "wiki"}, root=self.base)
+        # Empty candidates without proposal
+        with self.assertRaises(ToolError):
+            dispatch_tool(
+                "okf_candidate_check",
+                {"wiki": "wiki", "candidates": []},
+                root=self.base,
+            )
+        # Both candidates and proposal
+        with self.assertRaises(ToolError):
+            dispatch_tool(
+                "okf_candidate_check",
+                {"wiki": "wiki", "candidates": ["x"], "proposal": "wiki/proposal.md"},
+                root=self.base,
+            )
+        # Bad candidates types / traversal
+        for bad in ("not-a-list", [""], ["  "], [123], ["../a"], ["a/b"], ["a\\b"]):
+            with self.assertRaises(ToolError):
+                dispatch_tool(
+                    "okf_candidate_check",
+                    {"wiki": "wiki", "candidates": bad},
+                    root=self.base,
+                )
+
+        # Escaping / missing / invalid proposal path (confined root inside self.base)
+        confined = self.base / "confined_cand"
+        c_wiki = confined / "wiki"
+        write(c_wiki, "index.md", "# Index\n")
+        write(c_wiki, "proposal.md", "# Proposal\n")
+        outside_prop = self.base / "outside_proposal.md"
         outside_prop.write_text("# Outside\n", encoding="utf-8")
-        try:
-            # Neither candidates nor proposal
-            with self.assertRaises(ToolError):
-                dispatch_tool("okf_candidate_check", {"wiki": "wiki"}, root=self.base)
-            # Empty candidates without proposal
-            with self.assertRaises(ToolError):
-                dispatch_tool(
-                    "okf_candidate_check",
-                    {"wiki": "wiki", "candidates": []},
-                    root=self.base,
-                )
-            # Both candidates and proposal
+        for bad_prop in (
+            "../outside_proposal.md",
+            str(outside_prop),
+            "/etc/passwd",
+            "wiki/missing.md",
+            "wiki",
+            "   ",
+        ):
             with self.assertRaises(ToolError):
                 dispatch_tool(
                     "okf_candidate_check",
-                    {"wiki": "wiki", "candidates": ["x"], "proposal": "wiki/proposal.md"},
-                    root=self.base,
+                    {"wiki": "wiki", "proposal": bad_prop},
+                    root=confined,
                 )
-            # Bad candidates types / traversal
-            for bad in ("not-a-list", [""], ["  "], [123], ["../a"], ["a/b"], ["a\\b"]):
-                with self.assertRaises(ToolError):
-                    dispatch_tool(
-                        "okf_candidate_check",
-                        {"wiki": "wiki", "candidates": bad},
-                        root=self.base,
-                    )
-            # Escaping / missing / invalid proposal path
-            for bad_prop in ("../outside_proposal.md", "/etc/passwd", "wiki/missing.md", "wiki", "   "):
-                with self.assertRaises(ToolError):
-                    dispatch_tool(
-                        "okf_candidate_check",
-                        {"wiki": "wiki", "proposal": bad_prop},
-                        root=self.base,
-                    )
-            self.assertTrue(prop.exists())
-        finally:
-            if outside_prop.exists():
-                outside_prop.unlink()
+        self.assertTrue(prop.exists())
 
     # -- U2: okf_links -----------------------------------------------------
 
@@ -692,36 +700,35 @@ class ToolingTests(unittest.TestCase):
                 "okf_validate", {"wiki": "wiki", "check_evidence": True}, root=self.base,
             )
         # 2. evidence_dir escaping root (both check_evidence=True and False)
-        outside_ev = self.base.parent / "outside_ev"
-        outside_ev.mkdir(exist_ok=True)
-        try:
-            for ce in (False, True):
-                with self.assertRaises(ToolError):
-                    dispatch_tool(
-                        "okf_validate",
-                        {"wiki": "wiki", "check_evidence": ce, "evidence_dir": "../outside_ev"},
-                        root=self.base,
-                    )
-                with self.assertRaises(ToolError):
-                    dispatch_tool(
-                        "okf_validate",
-                        {"wiki": "wiki", "check_evidence": ce, "evidence_dir": "/tmp/outside_ev"},
-                        root=self.base,
-                    )
-            # 3. symlink <wiki>/evidence escaping root
-            sym_wiki = self.base / "sym_wiki"
-            write(sym_wiki, "index.md", "# Index\n")
-            os.symlink(outside_ev, sym_wiki / "evidence")
-            with self.assertRaises(ToolError) as ctx:
+        confined = self.base / "confined_ev"
+        c_wiki = confined / "wiki"
+        write(c_wiki, "index.md", "# Index\n")
+        outside_ev = self.base / "outside_ev"
+        outside_ev.mkdir()
+        for ce in (False, True):
+            with self.assertRaises(ToolError):
                 dispatch_tool(
                     "okf_validate",
-                    {"wiki": "sym_wiki", "check_evidence": True},
-                    root=self.base,
+                    {"wiki": "wiki", "check_evidence": ce, "evidence_dir": "../outside_ev"},
+                    root=confined,
                 )
-            self.assertIn("escapes", str(ctx.exception))
-        finally:
-            if outside_ev.exists():
-                outside_ev.rmdir()
+            with self.assertRaises(ToolError):
+                dispatch_tool(
+                    "okf_validate",
+                    {"wiki": "wiki", "check_evidence": ce, "evidence_dir": str(outside_ev)},
+                    root=confined,
+                )
+        # 3. symlink <wiki>/evidence escaping root
+        sym_wiki = confined / "sym_wiki"
+        write(sym_wiki, "index.md", "# Index\n")
+        os.symlink(outside_ev, sym_wiki / "evidence")
+        with self.assertRaises(ToolError) as ctx:
+            dispatch_tool(
+                "okf_validate",
+                {"wiki": "sym_wiki", "check_evidence": True},
+                root=confined,
+            )
+        self.assertIn("escapes", str(ctx.exception))
 
         # 4. nonexistent evidence_dir, file as evidence_dir, whitespace, bad bools
         for bad_ev in ("missing_ev", "wiki/a.md", "  "):
