@@ -1009,6 +1009,144 @@ class ToolingTests(unittest.TestCase):
                 with self.assertRaises(ToolError):
                     dispatch_tool("okf_claims", bad_args, root=self.base)
 
+    # -- U7: okf_neighbors -------------------------------------------------
+
+    def test_neighbors_schema_contract(self):
+        spec = self._spec("okf_neighbors")
+        schema = spec["inputSchema"]
+        self.assertEqual(schema["required"], ["wiki", "anchor"])
+        self.assertFalse(schema["additionalProperties"])
+        props = schema["properties"]
+        self.assertEqual(
+            set(props),
+            {"wiki", "anchor", "hops", "direction", "top_n", "include_admin"},
+        )
+        self.assertEqual(props["hops"]["default"], 1)
+        self.assertEqual(props["direction"]["enum"], ["both", "out", "in"])
+        self.assertEqual(props["direction"]["default"], "both")
+        self.assertEqual(props["top_n"]["default"], 10)
+        self.assertEqual(props["include_admin"]["default"], False)
+
+    def _make_neighbors_wiki(self) -> Path:
+        nw = self.base / "nbrs_wiki"
+        write(nw, "index.md", "# Index\n")
+        write(nw, "SUMMARY.md", node("type: Summary\ntitle: Summary\n", "# Summary\nSee [A](concepts/a.md).\n"))
+        write(nw, "concepts/a.md", node(
+            "type: Concept\ntitle: Concept A\n",
+            "# Concept A\n\n## 関連\n- Orthogonal to [B](b.md).\n- Also mentions [C](c.md).\n",
+        ))
+        write(nw, "concepts/b.md", node(
+            "type: Concept\ntitle: Concept B\n",
+            "# Concept B\n\n## 関連\n- Extends [A](a.md) and [D](d.md).\n",
+        ))
+        write(nw, "concepts/c.md", node(
+            "type: Concept\ntitle: Concept C\n",
+            "# Concept C\n\n## 関連\n- Uses [E](e.md).\n",
+        ))
+        write(nw, "concepts/d.md", node("type: Concept\ntitle: Concept D\n", "# Concept D\n"))
+        write(nw, "concepts/e.md", node(
+            "type: Concept\ntitle: Concept E\n",
+            "# Concept E\n\n## 関連\n- Inbound to [A](a.md).\n",
+        ))
+        return nw
+
+    def test_neighbors_ranking_directions_clamping_and_cli_parity(self):
+        nw = self._make_neighbors_wiki()
+
+        # Default hops=1, direction=both: B (mutual: 2 paths), C (1 path), E (1 path), ordered by (-paths, id)
+        res1 = dispatch_tool("okf_neighbors", {"wiki": "nbrs_wiki", "anchor": "a"}, root=self.base)
+        code1, cli1, _ = self._run_cli_json("neighbors", str(nw), "a", "--json")
+        self.assertEqual(code1, 0)
+        self.assertEqual(res1, cli1)
+        self.assertTrue(res1["found"])
+        self.assertEqual(res1["anchor"], {"id": "concepts/a.md", "title": "Concept A"})
+        self.assertEqual(
+            [n["id"] for n in res1["neighbors"]],
+            ["concepts/b.md", "concepts/c.md", "concepts/e.md"],
+        )
+        self.assertEqual(res1["neighbors"][0]["shortest_paths"], 2)
+        self.assertEqual(res1["neighbors"][0]["path"], ["concepts/a.md", "concepts/b.md"])
+        self.assertEqual(len(res1["neighbors"][0]["link_contexts"]), 2)
+        self.assertIn("Orthogonal to", res1["neighbors"][0]["link_contexts"][0]["context"])
+
+        # Exclude admin by default (SUMMARY.md is not in neighbors)
+        self.assertNotIn("SUMMARY.md", [n["id"] for n in res1["neighbors"]])
+
+        # hops=2 reaches D via B with path [a, b, d] and link_contexts along all steps
+        res2 = dispatch_tool(
+            "okf_neighbors",
+            {"wiki": "nbrs_wiki", "anchor": "a", "hops": 2, "direction": "out"},
+            root=self.base,
+        )
+        code2, cli2, _ = self._run_cli_json(
+            "neighbors", str(nw), "a", "--hops", "2", "--direction", "out", "--json",
+        )
+        self.assertEqual(code2, 0)
+        self.assertEqual(res2, cli2)
+        self.assertEqual(
+            [n["id"] for n in res2["neighbors"]],
+            ["concepts/b.md", "concepts/c.md", "concepts/d.md", "concepts/e.md"],
+        )
+        d_entry = next(n for n in res2["neighbors"] if n["id"] == "concepts/d.md")
+        self.assertEqual(d_entry["hop"], 2)
+        self.assertEqual(d_entry["path"], ["concepts/a.md", "concepts/b.md", "concepts/d.md"])
+        self.assertEqual([c["step"] for c in d_entry["link_contexts"]], [1, 2])
+
+        # direction=in returns only inbound links (B and E)
+        res_in = dispatch_tool(
+            "okf_neighbors",
+            {"wiki": "nbrs_wiki", "anchor": "a", "direction": "in"},
+            root=self.base,
+        )
+        self.assertEqual([n["id"] for n in res_in["neighbors"]], ["concepts/b.md", "concepts/e.md"])
+
+        # Clamping & determinism
+        c1 = dispatch_tool(
+            "okf_neighbors",
+            {"wiki": "nbrs_wiki", "anchor": "a", "hops": 10, "top_n": 100},
+            root=self.base,
+        )
+        c2 = dispatch_tool(
+            "okf_neighbors",
+            {"wiki": "nbrs_wiki", "anchor": "a", "hops": 10, "top_n": 100},
+            root=self.base,
+        )
+        code_c, cli_c, _ = self._run_cli_json(
+            "neighbors", str(nw), "a", "--hops", "10", "--top-n", "100", "--json",
+        )
+        self.assertEqual(code_c, 0)
+        self.assertEqual(c1, c2)
+        self.assertEqual(c1, cli_c)
+        self.assertEqual(c1["effective"], {"hops": 3, "direction": "both", "top_n": 50})
+        self.assertEqual(c1["truncated_params"], {"hops": True, "top_n": True})
+
+    def test_neighbors_missing_anchor_and_errors(self):
+        nw = self._make_neighbors_wiki()
+        missing = dispatch_tool(
+            "okf_neighbors", {"wiki": "nbrs_wiki", "anchor": "missing-concept"}, root=self.base,
+        )
+        code_m, cli_m, _ = self._run_cli_json(
+            "neighbors", str(nw), "missing-concept", "--json",
+        )
+        self.assertEqual(code_m, 1)
+        self.assertEqual(missing, cli_m)
+        self.assertFalse(missing["found"])
+        self.assertIn("anchor concept not found", missing["error"])
+        self.assertEqual(missing["neighbors"], [])
+
+        for bad_args in (
+            {"wiki": "nbrs_wiki", "anchor": ""},
+            {"wiki": "nbrs_wiki", "anchor": "a", "hops": 0},
+            {"wiki": "nbrs_wiki", "anchor": "a", "hops": True},
+            {"wiki": "nbrs_wiki", "anchor": "a", "top_n": 0},
+            {"wiki": "nbrs_wiki", "anchor": "a", "direction": "sideways"},
+            {"wiki": "nbrs_wiki", "anchor": "a", "include_admin": "yes"},
+            {"wiki": "../outside", "anchor": "a"},
+        ):
+            with self.subTest(bad_args=bad_args):
+                with self.assertRaises(ToolError):
+                    dispatch_tool("okf_neighbors", bad_args, root=self.base)
+
 
 if __name__ == "__main__":
     unittest.main()

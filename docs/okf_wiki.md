@@ -579,6 +579,7 @@ OKF_MCP_TOKEN="$(openssl rand -hex 24)" \
 | `okf_search` | 検索シード（Qdrant/同義語展開も選択可） | なし |
 | `okf_context` | トークン上限付き文脈解決（同上） | なし |
 | `okf_traverse` | 重み付きグラフ探索 | なし |
+| `okf_neighbors` | 非重み付け BFS 近傍概念・到達経路・リンク文脈の取得（`hops`<=3, `top_n`<=50 で切り詰め） | なし |
 | `okf_validate` | 構造・リンク・来歴・証跡検証（`strict_provenance` / `check_evidence` / `evidence_dir`） | なし |
 | `okf_candidate_check` | 候補スラッグの重複・同義語・タグ来歴・提案の逐語証跡検査 | なし |
 | `okf_links` | リンク到達性・孤立/無入次数/無出次数・連結成分診断 | なし |

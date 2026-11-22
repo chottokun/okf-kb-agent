@@ -155,6 +155,25 @@ def _parser() -> argparse.ArgumentParser:
                         help="relevance floor for generic anchors (0 = strict)")
     p_trav.add_argument("--json", action="store_true")
 
+    p_nbrs = sub.add_parser(
+        "neighbors",
+        help="deterministic bounded BFS neighbors and link contexts around an anchor",
+    )
+    p_nbrs.add_argument("dir", help="wiki root directory")
+    p_nbrs.add_argument("anchor", help="anchor concept path or slug")
+    p_nbrs.add_argument("--hops", type=int, default=1,
+                        help="BFS hop depth (default: 1, max: 3)")
+    p_nbrs.add_argument("--direction", choices=("both", "out", "in"),
+                        default="both",
+                        help="link traversal direction (default: both)")
+    p_nbrs.add_argument("--top-n", type=int, default=10,
+                        help="max neighbors to return (default: 10, max: 50)")
+    p_nbrs.add_argument("--include-admin", action="store_true", default=False,
+                        help="include admin/aggregate notes (BUILDLOG, SUMMARY, index)")
+    p_nbrs.add_argument("--no-admin", dest="include_admin", action="store_false",
+                        help="exclude admin/aggregate notes (default)")
+    p_nbrs.add_argument("--json", action="store_true", help="output JSON result")
+
     p_context = sub.add_parser(
         "context", help="resolve a query into token-bounded context")
     p_context.add_argument("dir")
@@ -1185,6 +1204,67 @@ def _dispatch(args: argparse.Namespace) -> int:
                         f"UNREACHABLE: {item['rel']} "
                         f"(in={item['inbound_count']}, out={item['outbound_count']})"
                     )
+        return 0
+
+    if args.command == "neighbors":
+        from .graph import build_graph
+        from .search import is_admin_file
+
+        wiki = Path(args.dir)
+        if not wiki.exists() or not wiki.is_dir():
+            print(f"error: wiki root directory not found: {args.dir}", file=sys.stderr)
+            return 1
+        if args.hops < 1:
+            print("error: --hops must be >= 1", file=sys.stderr)
+            return 1
+        if args.top_n < 1:
+            print("error: --top-n must be >= 1", file=sys.stderr)
+            return 1
+
+        graph = build_graph(wiki)
+        exclude_nodes = (
+            set()
+            if args.include_admin
+            else {rel for rel in graph.nodes if is_admin_file(rel)}
+        )
+        payload = graph.neighbors(
+            args.anchor,
+            hops=args.hops,
+            direction=args.direction,
+            top_n=args.top_n,
+            exclude_nodes=exclude_nodes,
+        )
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0 if payload["found"] else 1
+        if not payload["found"]:
+            print(f"error: {payload['error']}", file=sys.stderr)
+            return 1
+
+        anc = payload["anchor"]
+        eff = payload["effective"]
+        req = payload["requested"]
+        trunc = payload["truncated_params"]
+        trunc_note = ""
+        if any(trunc.values()):
+            trunc_note = f" (clamped from hops={req['hops']}, top_n={req['top_n']})"
+        print(f"ANCHOR: {anc['id']} — {anc['title']}")
+        print(
+            f"PARAMS: hops={eff['hops']} direction={eff['direction']} "
+            f"top_n={eff['top_n']} total_reached={payload['total_reached']}{trunc_note}"
+        )
+        for idx, item in enumerate(payload["neighbors"], 1):
+            path_str = " -> ".join(item["path"])
+            print(
+                f"  {idx}. {item['id']} (hop={item['hop']}, "
+                f"paths={item['shortest_paths']}) — {item['title']}"
+            )
+            print(f"     path: {path_str}")
+            for ctx in item["link_contexts"]:
+                print(
+                    f"     ctx[{ctx['step']}:{ctx['direction']}]: "
+                    f"[{ctx['heading']}] {ctx['context']}"
+                )
         return 0
 
     if args.command == "export":

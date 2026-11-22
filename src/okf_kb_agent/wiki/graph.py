@@ -18,7 +18,22 @@ from .model import (
     tokenize,
 )
 
-__all__ = ["Edge", "ReachabilityReport", "TraversalHit", "WikiGraph", "build_graph"]
+__all__ = [
+    "DEFAULT_NEIGHBOR_HOPS",
+    "DEFAULT_NEIGHBOR_TOP_N",
+    "Edge",
+    "MAX_NEIGHBOR_HOPS",
+    "MAX_NEIGHBOR_TOP_N",
+    "ReachabilityReport",
+    "TraversalHit",
+    "WikiGraph",
+    "build_graph",
+]
+
+DEFAULT_NEIGHBOR_HOPS = 1
+MAX_NEIGHBOR_HOPS = 3
+DEFAULT_NEIGHBOR_TOP_N = 10
+MAX_NEIGHBOR_TOP_N = 50
 
 
 @dataclass(frozen=True)
@@ -459,6 +474,192 @@ class WikiGraph:
             components=components,
             seed_reachability=seed_reachability,
         )
+
+    def neighbors(
+        self,
+        anchor: str,
+        *,
+        hops: int = DEFAULT_NEIGHBOR_HOPS,
+        direction: str = "both",
+        top_n: int = DEFAULT_NEIGHBOR_TOP_N,
+        exclude_nodes: set[str] | None = None,
+    ) -> dict[str, Any]:
+        """Return bounded, unweighted BFS neighbors and link contexts around an anchor.
+
+        Ranking is strictly structural and deterministic:
+        ``(hop ascending, shortest_paths descending, concept_id ascending)``.
+        Upper bounds are clamped to ``MAX_NEIGHBOR_HOPS`` and ``MAX_NEIGHBOR_TOP_N``
+        while recording both requested and effective parameter values.
+        """
+        if direction not in ("both", "out", "in"):
+            raise ValueError("direction must be 'both', 'out' or 'in'")
+        if hops < 1:
+            raise ValueError("hops must be >= 1")
+        if top_n < 1:
+            raise ValueError("top_n must be >= 1")
+
+        eff_hops = min(hops, MAX_NEIGHBOR_HOPS)
+        eff_top_n = min(top_n, MAX_NEIGHBOR_TOP_N)
+        truncated_params = {
+            "hops": hops > MAX_NEIGHBOR_HOPS,
+            "top_n": top_n > MAX_NEIGHBOR_TOP_N,
+        }
+        requested_meta = {
+            "anchor": anchor,
+            "hops": hops,
+            "direction": direction,
+            "top_n": top_n,
+        }
+        effective_meta = {
+            "hops": eff_hops,
+            "direction": direction,
+            "top_n": eff_top_n,
+        }
+
+        try:
+            resolved_anchor = self.resolve_seed(anchor)
+        except KeyError:
+            return {
+                "found": False,
+                "error": f"anchor concept not found: {anchor}",
+                "anchor": None,
+                "requested": requested_meta,
+                "effective": effective_meta,
+                "truncated_params": truncated_params,
+                "total_reached": 0,
+                "neighbors": [],
+            }
+
+        excluded = set(exclude_nodes or ()) - {resolved_anchor}
+
+        dist: dict[str, int] = {resolved_anchor: 0}
+        paths_count: dict[str, int] = {resolved_anchor: 1}
+        sample_path: dict[str, tuple[str, ...]] = {
+            resolved_anchor: (resolved_anchor,)
+        }
+        queue: deque[str] = deque([resolved_anchor])
+
+        while queue:
+            u = queue.popleft()
+            if dist[u] >= eff_hops:
+                continue
+            out_set = (
+                {t for t in self.edges.get(u, []) if t not in excluded}
+                if direction in ("out", "both")
+                else set()
+            )
+            in_set = (
+                {s for s in self.backlinks.get(u, []) if s not in excluded}
+                if direction in ("in", "both")
+                else set()
+            )
+            for v in sorted(out_set | in_set):
+                mult = int(v in out_set) + int(v in in_set)
+                cand_path = sample_path[u] + (v,)
+                if v not in dist:
+                    dist[v] = dist[u] + 1
+                    paths_count[v] = paths_count[u] * mult
+                    sample_path[v] = cand_path
+                    queue.append(v)
+                elif dist[v] == dist[u] + 1:
+                    paths_count[v] += paths_count[u] * mult
+                    if cand_path < sample_path[v]:
+                        sample_path[v] = cand_path
+
+        reached = sorted(
+            (rel for rel in dist if rel != resolved_anchor),
+            key=lambda rel: (dist[rel], -paths_count[rel], rel),
+        )
+
+        neighbors: list[dict[str, Any]] = []
+        for rel in reached[:eff_top_n]:
+            path = sample_path[rel]
+            contexts: list[dict[str, Any]] = []
+            seen_ctx: set[tuple[int, str, str, str, str, str, str]] = set()
+            for step_idx, (src_node, dst_node) in enumerate(zip(path, path[1:]), 1):
+                if direction in ("out", "both"):
+                    for edge in self.edge_objects.get(src_node, []):
+                        if edge.target == dst_node:
+                            key = (
+                                step_idx,
+                                edge.source,
+                                edge.target,
+                                "out",
+                                edge.heading,
+                                edge.anchor,
+                                edge.context,
+                            )
+                            if key not in seen_ctx:
+                                seen_ctx.add(key)
+                                contexts.append(
+                                    {
+                                        "step": step_idx,
+                                        "source": edge.source,
+                                        "target": edge.target,
+                                        "direction": "out",
+                                        "heading": edge.heading,
+                                        "anchor_text": edge.anchor,
+                                        "context": edge.context,
+                                    }
+                                )
+                if direction in ("in", "both"):
+                    for edge in self.edge_objects.get(dst_node, []):
+                        if edge.target == src_node:
+                            key = (
+                                step_idx,
+                                edge.source,
+                                edge.target,
+                                "in",
+                                edge.heading,
+                                edge.anchor,
+                                edge.context,
+                            )
+                            if key not in seen_ctx:
+                                seen_ctx.add(key)
+                                contexts.append(
+                                    {
+                                        "step": step_idx,
+                                        "source": edge.source,
+                                        "target": edge.target,
+                                        "direction": "in",
+                                        "heading": edge.heading,
+                                        "anchor_text": edge.anchor,
+                                        "context": edge.context,
+                                    }
+                                )
+            contexts.sort(
+                key=lambda c: (
+                    c["step"],
+                    c["source"],
+                    c["target"],
+                    c["direction"],
+                    c["heading"],
+                    c["context"],
+                )
+            )
+            neighbors.append(
+                {
+                    "id": rel,
+                    "title": self.nodes[rel].title,
+                    "hop": dist[rel],
+                    "shortest_paths": paths_count[rel],
+                    "path": list(path),
+                    "link_contexts": contexts,
+                }
+            )
+
+        return {
+            "found": True,
+            "anchor": {
+                "id": resolved_anchor,
+                "title": self.nodes[resolved_anchor].title,
+            },
+            "requested": requested_meta,
+            "effective": effective_meta,
+            "truncated_params": truncated_params,
+            "total_reached": len(reached),
+            "neighbors": neighbors,
+        }
 
 
 def build_graph(root: str | Path) -> WikiGraph:

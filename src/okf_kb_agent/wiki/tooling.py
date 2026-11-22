@@ -206,6 +206,50 @@ TOOL_SPECS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "okf_neighbors",
+        "description": (
+            "Return deterministic unweighted BFS neighbors around an anchor "
+            "concept with hop distance, shortest-path counts, traversal paths, "
+            "and link context lines (clamped to hops<=3, top_n<=50; no ranking "
+            "weights or routing decisions)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wiki": {"type": "string", "description": "Wiki root directory."},
+                "anchor": {
+                    "type": "string",
+                    "description": "Anchor concept path or slug.",
+                },
+                "hops": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 1,
+                    "description": "BFS hop depth (default 1; values above 3 are clamped to 3).",
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["both", "out", "in"],
+                    "default": "both",
+                    "description": "Link traversal direction (default: both).",
+                },
+                "top_n": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 10,
+                    "description": "Maximum neighbors to return (default 10; values above 50 are clamped to 50).",
+                },
+                "include_admin": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Include admin/aggregate notes (default: false).",
+                },
+            },
+            "required": ["wiki", "anchor"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "okf_validate",
         "description": (
             "Validate frontmatter, links, orphans, index structure, "
@@ -539,6 +583,30 @@ def dispatch_tool(name: str, arguments: dict[str, Any],
             raise ToolError(f"seed not found: {seed}") from exc
         return [hit.as_dict() for hit in hits]
 
+    if name == "okf_neighbors":
+        from .graph import build_graph
+        from .search import is_admin_file
+
+        anchor = _required_string(arguments, "anchor")
+        hops = _min_int(arguments, "hops", 1, 1)
+        direction = _choice(arguments, "direction", ("both", "out", "in"), "both")
+        top_n = _min_int(arguments, "top_n", 10, 1)
+        include_admin = _boolean(arguments, "include_admin", False)
+
+        graph = build_graph(wiki)
+        exclude_nodes = (
+            set()
+            if include_admin
+            else {rel for rel in graph.nodes if is_admin_file(rel)}
+        )
+        return graph.neighbors(
+            anchor,
+            hops=hops,
+            direction=direction,
+            top_n=top_n,
+            exclude_nodes=exclude_nodes,
+        )
+
     if name == "okf_validate":
         from .validate import validate_wiki
 
@@ -868,6 +936,16 @@ def _bounded_int(arguments: dict[str, Any], key: str, default: int,
         raise ToolError(f"{key} must be an integer")
     if not minimum <= value <= maximum:
         raise ToolError(f"{key} must be between {minimum} and {maximum}")
+    return value
+
+
+def _min_int(arguments: dict[str, Any], key: str, default: int,
+             minimum: int) -> int:
+    value = arguments.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ToolError(f"{key} must be an integer")
+    if value < minimum:
+        raise ToolError(f"{key} must be >= {minimum}")
     return value
 
 

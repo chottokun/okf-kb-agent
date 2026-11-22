@@ -52,9 +52,10 @@ Use `search` and `traverse` only when context is insufficient.
 # Full-text seeds (Pattern A/B; auto selects B above 500 nodes)
 uv run okf search <wiki> "<query>" --limit 10 --json
 
-# Explicit graph expansion (out) or incoming links (in)
+# Explicit graph expansion (out) or incoming links (in), and unweighted BFS neighbors
 uv run okf traverse <wiki> <seed> --depth 2 --query "<query>" --direction out --json
 uv run okf traverse <wiki> <seed> --depth 1 --direction in --json
+uv run okf neighbors <wiki> <anchor> --hops 1 --direction both --top-n 10 --json
 
 # Diagnose link reachability, zero-inbound concepts, and components (--no-admin default)
 uv run okf links <wiki> --json
@@ -122,7 +123,7 @@ to `--backend local`.
 - Read the breakdown before re-querying: `--json` hits carry `breakdown` (per-term kind/field/points, phrase, field subtotals, adjustments, gate matched/missed, total == score). The missed list and the field points show why a note ranked where it did; change the query or the filter, not your trust in the corpus. `eval-synonyms` failure rows carry `failure_detail` with the same breakdowns.
 - Informational link counts: `--json` hits carry `outgoing_links` and `backlinks` (distinct non-special internal notes in the same KB linked to and from, attached purely for the reader; never enter scoring, ranking, or breakdown totals).
 
-**MCP equivalents**: The same operations are exposed over MCP with identical semantics and result schemas: `okf_search` (accepts `type` / `scope` / `expand` / `backend` exactly like the CLI), `okf_context`, `okf_traverse`, `okf_links`, `okf_stats`, and `okf_validate` (with `check_evidence` / `evidence_dir` / `strict_provenance`). The scoring, filter, and query-craft guidance above applies unchanged to MCP callers; only the transport differs. `okf_candidate_check` (candidate/proposal inspection) and `okf_claims` (extraction and deterministic sampling only; no verdicts) are available over both CLI and MCP.
+**MCP equivalents**: The same operations are exposed over MCP with identical semantics and result schemas: `okf_search` (accepts `type` / `scope` / `expand` / `backend` exactly like the CLI), `okf_context`, `okf_traverse`, `okf_neighbors` (unweighted BFS neighbors, shortest paths, and link contexts; see `.agents/skills/kb-search/SKILL.md` for anchor/hop/top-N discipline), `okf_links`, `okf_stats`, and `okf_validate` (with `check_evidence` / `evidence_dir` / `strict_provenance`). The scoring, filter, and query-craft guidance above applies unchanged to MCP callers; only the transport differs. `okf_candidate_check` (candidate/proposal inspection) and `okf_claims` (extraction and deterministic sampling only; no verdicts) are available over both CLI and MCP.
 
 ### Synonym sync and quality gate
 
@@ -192,15 +193,12 @@ sources:
 
 ## Gotchas and constraints
 
-`okf context` prunes a candidate when its `## Gotchas / Anti-Pitfalls` section
-contains:
+`okf context` prunes a candidate when its `## Gotchas / Anti-Pitfalls` section contains:
 
 - `INCOMPATIBLE_EXPLICIT` — unconditional stop
-- `INCOMPATIBLE_WITH: windows, gpu` — prune when the query matches a term
-- `NOT_FOR: production` — prune when the query matches a term
+- `INCOMPATIBLE_WITH: windows, gpu` / `NOT_FOR: production` — prune when query matches a term
 
-Do not override an `INCOMPATIBLE_EXPLICIT` constraint merely because a node is
-highly ranked. Report the pruned node and choose another path.
+Do not override `INCOMPATIBLE_EXPLICIT` merely because a node is highly ranked; report the pruned node and choose another path.
 
 ## EvolutionLoop
 

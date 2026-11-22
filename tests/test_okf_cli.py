@@ -257,9 +257,10 @@ class CliTests(unittest.TestCase):
         code, out, _ = self.run_cli("schema", "--json")
         self.assertEqual(code, 0)
         specs = json.loads(out)
-        self.assertEqual(len(specs), 10)
+        self.assertEqual(len(specs), 11)
         names = {spec["name"] for spec in specs}
         self.assertIn("okf_context", names)
+        self.assertIn("okf_neighbors", names)
         self.assertIn("okf_candidate_check", names)
         self.assertIn("okf_links", names)
         self.assertIn("okf_claims", names)
