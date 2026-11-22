@@ -27,7 +27,7 @@ OKF v0.2 stores knowledge as plain Markdown + YAML frontmatter (`1 topic = 1 fil
 - `src/okf_kb_agent/wiki/verify.py` — deterministic source verifier & snapshot grounding for `arXiv`, `DOI`, Web URLs, and local files (`okf verify-source`)
 - `src/okf_kb_agent/wiki/validate.py` — structure, link, provenance (`--strict-provenance`), and evidence snapshot (`--check-evidence`) gates
 - `src/okf_kb_agent/wiki/candidate.py` — pre-flight duplicate, synonym, and tag-collision checker (`okf candidate-check`)
-- `src/okf_kb_agent/wiki/search.py` & `src/okf_kb_agent/wiki/graph.py` — classical keyword search (`AND`/`OR`/`*`, typo/inflection fallback, score breakdown), weighted traversal, and link reachability diagnostics (`okf links`)
+- `src/okf_kb_agent/wiki/search.py` & `src/okf_kb_agent/wiki/graph.py` — classical keyword search (`AND`/`OR`/`*`, typo/inflection fallback, score breakdown), weighted traversal, unweighted BFS neighbor & link-context lookup (`okf neighbors`), and link reachability diagnostics (`okf links`)
 - `src/okf_kb_agent/wiki/claims.py` — deterministic numeric-claim extraction and seeded audit sampling (`okf claims`)
 - `src/okf_kb_agent/wiki/export.py` — offline multi-KB viewer JSON bundle exporter (`okf export`, format v2 with first-class `papers`, `concepts`, `patents`, `synonyms`)
 - `src/okf_kb_agent/wiki/tooling.py` — deterministic JSON tool contracts + path-bounded dispatcher
@@ -44,7 +44,7 @@ OKF v0.2 stores knowledge as plain Markdown + YAML frontmatter (`1 topic = 1 fil
 
 ### Skills, Examples, Scripts & Docs
 
-- `.agents/skills/` — project skills (`okf-wiki`, `okf-design-conventions`, `source-verify`, `kb-batch-discipline`, `kb-audit`, `kb-intake`, `kb-create`, `patent-to-wiki`, `create-skill`, `modify-skill`)
+- `.agents/skills/` — project skills (`okf-wiki`, `okf-design-conventions`, `source-verify`, `kb-search`, `kb-batch-discipline`, `kb-audit`, `kb-intake`, `kb-create`, `patent-to-wiki`, `create-skill`, `modify-skill`)
 - `examples/wiki/` — synthetic demo wiki (concepts, workflows, gotchas, synergistic notes, and synthetic patents)
 - `scripts/release_smoke.py` — offline CLI/MCP release smoke test
 - `scripts/check_dist.py` — wheel/sdist secret and CLI-content guard
@@ -86,6 +86,7 @@ uv run okf verify-source --file ./local.pdf --cache-dir mywiki/evidence --genre 
 # 5. Search, traverse the Markdown link graph, and compile bounded context
 uv run okf search mywiki "attention AND kv-cache*"
 uv run okf traverse mywiki concepts/my-concept --depth 2
+uv run okf neighbors mywiki concepts/my-concept --hops 1 --json
 uv run okf context mywiki "your query" --max-nodes 5
 uv run okf sync-synonyms mywiki
 uv run okf search mywiki "alias query" --expand --json

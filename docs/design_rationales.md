@@ -134,6 +134,12 @@
   * 決定論性とオフライン動作を保つため、書誌解決はローカルの `evidence/` とキャッシュディレクトリのみを参照し、未キャッシュやタイトル欠落の論文は最小レコード（`title: null`）＋ `warnings` として明示する。
 * **移行互換**: `format_version=1` および `--scope`（`all` / `concepts` / `patents`）により先行プロトタイプ（`scripts/export_kb_viewer_all.py`）との後方互換を維持している。
 
+### 4.5 非重み付け近傍走査（`okf neighbors` / `okf_neighbors`）と `kb-search` スキル（実装済み）
+* **背景と根拠**: 検索レーン比較実験（`~/okf-growth/search-lanes/`）により、`kb-ai-research`（概念 43 / 有向リンク 220）や `kb-semiconductor-thermal`（概念 51 / 有向リンク 335）のような密なグラフでは 2 hop でほぼ KB 全体に届くことが実測された。また関係型プローブでは「点検索が掴んだ対比元アンカーの 1 hop 先に正解がある一方、構造順位だけでは 1 位を確定できない」ことが確認された。
+* **道具と判断の分離**:
+  * **道具の側（`okf neighbors` / MCP `okf_neighbors`）**: §1.2 の原則に従い、`hop 昇順 → 最短経路本数 降順 → 概念 ID 昇順` の純粋構造順のみで候補を返し、重みやスコアリングを焼かない。`hops`（既定 `1`、上限 `3`）と `top_n`（既定 `10`、上限 `50`）は呼び出し側の指定を切り詰めつつ `requested` / `effective` / `truncated_params` を返し、判断材料として到達 `path` と `link_contexts`（見出し・リンク行テキスト）を添付する。
+  * **スキルの側（`.agents/skills/kb-search/SKILL.md`）**: 「アンカーを掴む → `hops=1` から近傍と経路を見る → `link_contexts` とノートを読んで判断する」反復作法、KB 密度を踏まえた `hops` / `top_n` 調整、アンカー不在やリンク未到達を `kb-intake` の成長候補へ接続する流れを規定する。
+
 ---
 
 ## 5. 外部記憶・監査記録の分離方針（Records Pointer）

@@ -294,6 +294,22 @@ uv run okf links mywiki --include-admin
 - **既定の挙動 (`--no-admin`)**: `okf search` と同様に `BUILDLOG.md` や `SUMMARY.md` 等の管理ノートを除外して集計します（管理ノートからの参照によって概念間のリンク欠落が隠れるのを防ぐため）。
 - **出力される主な事実**: `isolated`（出・入ともに 0 件）、`zero_inbound`（他ノードからの被参照が 0 件）、`zero_outbound`（他ノードへの発リンクが 0 件）、`components`（弱連結成分の一覧）、`seed_reachability`（`--from` 指定時の到達可能／到達不能ノード一覧）。
 
+### 4.4 非重み付け近傍・経路・リンク文脈の取得（neighbors）
+
+`okf neighbors` は、アンカー概念の周辺を重み無し BFS で辿り、到達経路とリンク文脈行を返す決定的な読み取り専用コマンドです（終了コードはアンカー発見時 `0`、不在時 `1`）。
+
+```bash
+# 既定（--hops 1 --direction both --top-n 10 --no-admin）
+uv run okf neighbors mywiki paged-attention --json
+
+# 1 hop で決め手に欠ける場合のみ 2 hop へ広げ、上位 20 件まで眺める
+uv run okf neighbors mywiki paged-attention --hops 2 --direction both --top-n 20 --json
+```
+
+- **パラメータと切り詰め**: `--hops`（既定 `1`、上限 `3`）、`--direction`（`both` / `out` / `in`、既定 `both`）、`--top-n`（既定 `10`、上限 `50`）、`--no-admin`（既定）。上限超過時は切り詰められ、JSON に `requested`・`effective`・`truncated_params` を記録します。
+- **並び順と出力**: 順位は `hop 昇順 → shortest_paths 降順 → concept_id 昇順` の純粋な構造順のみで決め、重み付けや判断は焼込みません。各近傍には `path`（`A -> B -> C`）と各ステップの `link_contexts`（`heading` / `anchor_text` / `context`）を添付します。アンカー概念が不在の場合は `found: false` と `error` を明示して返します。
+- **検索作法**: `hops` や `top_n` の裁量、リンク文脈の読み方、辞書の穴・リンク不足を成長候補へ回す手順は `.agents/skills/kb-search/SKILL.md` を参照してください。
+
 ## 5. 段階的開示（index）
 
 - ルート `index.md`: セクション一覧と件数、直下ノードのみ。
@@ -625,6 +641,7 @@ curl -s -H "Authorization: Bearer $OKF_MCP_TOKEN" \
 - `--root` は許可ルート。`wiki` 引数に加え、`proposal`（`okf_candidate_check`）や `evidence_dir`（`okf_validate`、`check_evidence=true` 時の既定は `<wiki>/evidence`）も解決後に `--root` 配下でなければ拒否。
 - `okf_candidate_check` は中立的な事実関係（`name_occupied` / `synonyms` / `tag_on` / `verbatim_check`）のみを返し、`fail_on` や合否判定・重みづけは持たない。
 - `okf_claims` は抽出と決定的サンプリング（`random.Random(seed).shuffle`）のみを行い、判定（`supports` / `contradicts` 等）や重みづけは返さない。
+- `okf_neighbors` は非重み付け BFS による近傍・最短経路数・`path`・`link_contexts` のみを返し（`hops<=3` / `top_n<=50` で切り詰め、`requested` / `effective` を明示）、スコアリングやルーティング判断は持たない。
 - `okf_ingest_epo` の `offline` は既定 `true`。ネットワーク取得は
   EPO スキルがキャッシュ欠損を確認した後だけ `false` にする。
 - `okf_search` / `okf_context` は `backend=qdrant` と

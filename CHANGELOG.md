@@ -8,6 +8,15 @@ semantic versioning.
 
 ### Added
 
+- `okf neighbors` CLI command and MCP `okf_neighbors` tool (`WikiGraph.neighbors()`),
+  providing deterministic unweighted BFS neighbor discovery (`hop` asc ->
+  `shortest_paths` desc -> `concept_id` asc) with traversal `path`,
+  `link_contexts`, explicit missing-anchor responses (`found: false`), and
+  clamped `hops` (default 1, max 3) / `top_n` (default 10, max 50) metadata.
+- `.agents/skills/kb-search/SKILL.md` documenting the iterative KB retrieval
+  discipline (anchor acquisition, `hops`/`top_n` judgment, path and
+  link-context reading, and growth-candidate handoff to `kb-intake`), referenced
+  from `.agents/skills/okf-wiki/SKILL.md`.
 - Informational `outgoing_links` and `backlinks` fields on search hits in
   `okf search --json` and MCP `okf_search`, reporting the number of distinct
   internal notes linked to and from in the same KB without affecting scoring,
