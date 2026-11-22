@@ -55,10 +55,10 @@ class McpServerTests(unittest.TestCase):
     def test_tools_list_and_call(self):
         listed = self.request("tools/list")
         tools = listed["result"]["tools"]
-        self.assertEqual(len(tools), 10)
+        self.assertEqual(len(tools), 11)
         self.assertEqual({tool["name"] for tool in tools}, {
-            "okf_search", "okf_context", "okf_traverse", "okf_validate",
-            "okf_candidate_check", "okf_links", "okf_claims",
+            "okf_search", "okf_context", "okf_traverse", "okf_neighbors",
+            "okf_validate", "okf_candidate_check", "okf_links", "okf_claims",
             "okf_stats", "okf_index", "okf_ingest_epo",
         })
         called = self.request("tools/call", {
@@ -126,7 +126,7 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(responses[0]["id"], "a")
         self.assertEqual(responses[0]["result"], {})
         self.assertEqual(responses[1]["error"]["code"], -32700)
-        self.assertEqual(len(responses[2]["result"]["tools"]), 10)
+        self.assertEqual(len(responses[2]["result"]["tools"]), 11)
 
     def test_search_schema_declares_filter_params(self):
         listed = self.request("tools/list")
@@ -424,6 +424,39 @@ class McpServerTests(unittest.TestCase):
         })
         self.assertTrue(err_resp["result"]["isError"])
         self.assertIn("non-negative", err_resp["result"]["content"][0]["text"])
+
+    def test_neighbors_mcp_call_clamping_and_missing_anchor(self):
+        write(self.wiki, "concepts/alpha.md", node(
+            "type: Concept\ntitle: Alpha\n",
+            "# Alpha\nLinks to [Beta](beta.md).\n",
+        ))
+        write(self.wiki, "concepts/beta.md", node(
+            "type: Concept\ntitle: Beta\n",
+            "# Beta\nBack to [Alpha](alpha.md).\n",
+        ))
+
+        resp = self.request("tools/call", {
+            "name": "okf_neighbors",
+            "arguments": {"wiki": "wiki", "anchor": "alpha", "hops": 9, "top_n": 99},
+        })
+        self.assertFalse(resp["result"]["isError"])
+        data = json.loads(resp["result"]["content"][0]["text"])
+        self.assertTrue(data["found"])
+        self.assertEqual(data["requested"], {"anchor": "alpha", "hops": 9, "direction": "both", "top_n": 99})
+        self.assertEqual(data["effective"], {"hops": 3, "direction": "both", "top_n": 50})
+        self.assertEqual(data["truncated_params"], {"hops": True, "top_n": True})
+        self.assertEqual(data["neighbors"][0]["id"], "concepts/beta.md")
+        self.assertEqual(data["neighbors"][0]["shortest_paths"], 2)
+
+        missing = self.request("tools/call", {
+            "name": "okf_neighbors",
+            "arguments": {"wiki": "wiki", "anchor": "nonexistent"},
+        })
+        self.assertFalse(missing["result"]["isError"])
+        mdata = json.loads(missing["result"]["content"][0]["text"])
+        self.assertFalse(mdata["found"])
+        self.assertIn("anchor concept not found", mdata["error"])
+        self.assertEqual(mdata["neighbors"], [])
 
 
 if __name__ == "__main__":
