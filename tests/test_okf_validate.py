@@ -163,7 +163,10 @@ class ValidationTests(unittest.TestCase):
             "# Stub\n",
         ))
         report = validate_wiki(self.root)
-        self.assertTrue(any("a.md: [P3] basis=external without verified_at" in w for w in report.warnings))
+        self.assertTrue(any(
+            "a.md: [P3] basis=external without verified (or fallback x-okfkb-verified-at)" in w
+            for w in report.warnings
+        ))
         self.assertFalse(any("stub.md: [P3]" in w for w in report.warnings))
 
     def test_provenance_p4_block_local_numeric_checks(self):

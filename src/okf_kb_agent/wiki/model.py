@@ -49,7 +49,7 @@ __all__ = [
     "write_concept",
 ]
 
-OKF_FORMAT_VERSION = "0.2"
+OKF_FORMAT_VERSION = "0.3"
 SUPPORTED_OKF_VERSIONS: tuple[str, ...] = ("0.2", "0.3")
 
 SCOPE_WEIGHTS: dict[str, float] = {
