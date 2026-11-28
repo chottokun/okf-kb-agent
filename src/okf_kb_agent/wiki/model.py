@@ -5,7 +5,7 @@ import posixpath
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
@@ -455,7 +455,84 @@ class Concept:
             "sources": self.sources,
             "verified": [event.to_dict() for event in self.verified],
             "verified_at": self.verified_at,
+            "trust_tier": trust_tier(self),
         }
+
+
+def _parse_utc_timestamp(value: str) -> datetime | None:
+    """Parse an ISO date (as UTC 00:00:00) or ISO timestamp to UTC datetime."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if _ISO_DATE_STRICT_RE.match(text):
+        try:
+            d = date.fromisoformat(text)
+        except ValueError:
+            return None
+        return datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=timezone.utc)
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _extract_provenance_events(
+    concept: Concept | Mapping[str, Any],
+) -> tuple[ProvenanceEvent | None, list[ProvenanceEvent]]:
+    if isinstance(concept, Concept):
+        return concept.generated, concept.verified
+    gen_raw = concept.get("generated")
+    gen: ProvenanceEvent | None = None
+    if isinstance(gen_raw, Mapping):
+        try:
+            gen = ProvenanceEvent.from_mapping(gen_raw)
+        except ValueError:
+            gen = None
+    ver_raw = concept.get("verified")
+    if isinstance(ver_raw, Mapping):
+        items: list[Any] = [ver_raw]
+    elif isinstance(ver_raw, list):
+        items = ver_raw
+    else:
+        items = []
+    ver: list[ProvenanceEvent] = []
+    for item in items:
+        if isinstance(item, Mapping):
+            try:
+                ver.append(ProvenanceEvent.from_mapping(item))
+            except ValueError:
+                continue
+    return gen, ver
+
+
+def trust_tier(concept: Concept | Mapping[str, Any]) -> str:
+    """Compute OKF v0.3 §5.3 consumer-side trust tier without storing it."""
+    generated, verified_events = _extract_provenance_events(concept)
+    if not verified_events:
+        return "unverified"
+
+    if generated is None:
+        current_events = verified_events
+    else:
+        gen_ts = _parse_utc_timestamp(generated.at)
+        if gen_ts is None:
+            return "unverified"
+        current_events = []
+        for ev in verified_events:
+            ev_ts = _parse_utc_timestamp(ev.at)
+            if ev_ts is not None and ev_ts >= gen_ts:
+                current_events.append(ev)
+
+    if not current_events:
+        return "unverified"
+    if any(ev.by.startswith("human:") for ev in current_events):
+        return "human-reviewed"
+    return "machine-confirmed"
 
 
 def scope_from_heading(heading: str) -> str | None:

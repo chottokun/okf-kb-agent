@@ -507,6 +507,26 @@ def _parser() -> argparse.ArgumentParser:
     )
     p_conv.add_argument("--json", action="store_true", help="output JSON report")
 
+    p_stamp_gen = sub.add_parser(
+        "stamp-generated",
+        help="set generated {by, at} on named notes",
+    )
+    p_stamp_gen.add_argument("dir", help="wiki root directory")
+    p_stamp_gen.add_argument("--by", required=True, help="producer actor (e.g. okf-glm-runner/1)")
+    p_stamp_gen.add_argument("--at", default=None, help="ISO date or timestamp (default: today UTC)")
+    p_stamp_gen.add_argument("notes", nargs="+", help="note paths relative to wiki root")
+    p_stamp_gen.add_argument("--json", action="store_true", help="output JSON report")
+
+    p_stamp_ver = sub.add_parser(
+        "stamp-verified",
+        help="append verified {by, at} event on named notes (idempotent)",
+    )
+    p_stamp_ver.add_argument("dir", help="wiki root directory")
+    p_stamp_ver.add_argument("--by", required=True, help="auditor actor (e.g. process:okf-morning-audit)")
+    p_stamp_ver.add_argument("--at", default=None, help="ISO date or timestamp (default: today UTC)")
+    p_stamp_ver.add_argument("notes", nargs="+", help="note paths relative to wiki root")
+    p_stamp_ver.add_argument("--json", action="store_true", help="output JSON report")
+
     return parser
 
 
@@ -603,9 +623,13 @@ def _dispatch(args: argparse.Namespace) -> int:
         except TypeError:
             hits = backend.search(args.query, limit=args.limit)
         if args.json:
+            from .tooling import _attach_trust_tier
+
             hits = attach_link_counts(hits, args.dir)
-            print(json.dumps([hit.as_dict() for hit in hits],
-                             ensure_ascii=False, indent=2))
+            payload = _attach_trust_tier(
+                Path(args.dir), [hit.as_dict() for hit in hits]
+            )
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
         elif not hits:
             print("no matches")
         else:
@@ -1381,6 +1405,22 @@ def _dispatch(args: argparse.Namespace) -> int:
             print(report.format_text())
         if args.check_lossless and report.lossless_errors:
             return 1
+        return 0
+
+    if args.command in ("stamp-generated", "stamp-verified"):
+        from .frontmatter import FrontmatterError
+        from .stamp import stamp_generated, stamp_verified
+
+        fn = stamp_generated if args.command == "stamp-generated" else stamp_verified
+        try:
+            report = fn(args.dir, args.notes, by=args.by, at=args.at)
+        except (FrontmatterError, FileNotFoundError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+        else:
+            print(report.format_text())
         return 0
 
     return 2
