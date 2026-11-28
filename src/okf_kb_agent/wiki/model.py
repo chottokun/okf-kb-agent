@@ -557,6 +557,25 @@ def validate_meta(meta: dict[str, Any]) -> list[str]:
                         SourceRecord.from_mapping(item)
                     except ValueError as exc:
                         errors.append(f"invalid source entry: {exc}")
+                    else:
+                        for ext_key in ("x-okfkb-issued", "x-okfkb-retrieved"):
+                            if ext_key in item and item[ext_key] is not None:
+                                ext_val = item[ext_key]
+                                if (
+                                    not isinstance(ext_val, str)
+                                    or not _is_valid_iso_date(ext_val)
+                                ):
+                                    errors.append(f"invalid {ext_key}: {ext_val}")
+                        if "x-okfkb-genre" in item and item["x-okfkb-genre"] is not None:
+                            genre_val = item["x-okfkb-genre"]
+                            if (
+                                not isinstance(genre_val, str)
+                                or genre_val not in GENRE_VALUES
+                            ):
+                                errors.append(
+                                    f"invalid x-okfkb-genre: {genre_val} "
+                                    f"(expected one of {GENRE_VALUES})"
+                                )
                 else:
                     errors.append("sources items must be strings or mappings")
 
@@ -587,6 +606,12 @@ def validate_meta(meta: dict[str, Any]) -> list[str]:
         if (not isinstance(verified_at, str)
                 or not _is_valid_iso_date(verified_at)):
             errors.append(f"invalid verified_at: {verified_at}")
+
+    x_verified_at = meta.get("x-okfkb-verified-at")
+    if x_verified_at is not None:
+        if (not isinstance(x_verified_at, str)
+                or not _is_valid_iso_date(x_verified_at)):
+            errors.append(f"invalid x-okfkb-verified-at: {x_verified_at}")
     return errors
 
 

@@ -33,6 +33,8 @@ _KEY_ORDER = (
 
 _NESTED_KEY_ORDER = (
     "id", "resource", "title", "author", "usage_count", "last_modified",
+    "x-okfkb-kind", "x-okfkb-issued", "x-okfkb-retrieved",
+    "x-okfkb-via", "x-okfkb-snapshot", "x-okfkb-genre", "x-okfkb-raw",
     "by", "at",
 )
 

@@ -309,11 +309,17 @@ def _write_concept_if_changed(
 
     new_meta = dict(meta)
     if existing_meta is not None:
-        # Preserve existing trust/generation state so re-ingest does not
-        # silently invalidate prior verification events (OKF v0.3 §5.3).
-        for trust_key in ("generated", "verified", "x-okfkb-verified-at", "verified_at"):
-            if trust_key in existing_meta:
-                new_meta[trust_key] = existing_meta[trust_key]
+        # Preserve existing verification history, while advancing any existing
+        # generated.at timestamp on substantive rewrites so §5.3 flags stale
+        # verifications against newly ingested content.
+        if "verified" in existing_meta:
+            new_meta["verified"] = existing_meta["verified"]
+        existing_generated = existing_meta.get("generated")
+        if isinstance(existing_generated, Mapping):
+            updated_generated = dict(existing_generated)
+            if isinstance(new_meta.get("timestamp"), str) and new_meta["timestamp"]:
+                updated_generated["at"] = new_meta["timestamp"]
+            new_meta["generated"] = updated_generated
     write_concept(target, new_meta, body)
     return True
 

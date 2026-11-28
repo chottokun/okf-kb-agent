@@ -279,6 +279,79 @@ class ConvertWikiIntegrationTests(unittest.TestCase):
         self.assertTrue(payload2["written"])
         self.assertEqual(payload2["files_changed"], 1)
 
+    def test_malformed_frontmatter_recorded_in_skipped_files_and_parse_errors(self):
+        write(
+            self.root,
+            "concepts/broken.md",
+            "not frontmatter at all\n# Broken\n",
+        )
+        report = convert_wiki_v03(self.root)
+        self.assertEqual(report.skipped_files, 1)
+        self.assertEqual(len(report.parse_errors), 1)
+        self.assertEqual(report.parse_errors[0]["rel"], "concepts/broken.md")
+        self.assertIn("skipped: 1", report.format_text())
+        self.assertIn("PARSE_ERROR: concepts/broken.md", report.format_text())
+        self.assertEqual(report.as_dict()["skipped_files"], 1)
+
+    def test_invalid_verified_map_event_raises_value_error(self):
+        write(
+            self.root,
+            "concepts/a.md",
+            "---\ntype: Concept\n---\n# A\n",
+        )
+        vmap_path = Path(self.tmp.name) / "bad_vmap.json"
+        vmap_path.write_text(
+            json.dumps({"concepts/a.md": [{"by": "only-by"}]}),
+            encoding="utf-8",
+        )
+        with self.assertRaises(ValueError):
+            convert_wiki_v03(self.root, verified_map_path=vmap_path)
+
+    def test_verified_map_merges_with_existing_verified_and_is_idempotent(self):
+        write(
+            self.root,
+            "concepts/existing.md",
+            "---\n"
+            "type: Concept\n"
+            "basis: external\n"
+            "sources:\n"
+            "  - id: arxiv-2406.06484\n"
+            "    resource: https://arxiv.org/abs/2406.06484\n"
+            "    x-okfkb-kind: preprint\n"
+            "verified:\n"
+            "  - by: human:chottokun\n"
+            '    at: "2026-11-27"\n'
+            'verified_at: "2026-11-26"\n'
+            "---\n"
+            "# Existing\n",
+        )
+        vmap_path = Path(self.tmp.name) / "merge_vmap.json"
+        vmap_path.write_text(
+            json.dumps({
+                "concepts/existing.md": [
+                    {"by": "process:okf-morning-audit", "at": "2026-11-26"},
+                ]
+            }),
+            encoding="utf-8",
+        )
+        first = convert_wiki_v03(self.root, write=True, verified_map_path=vmap_path)
+        self.assertEqual(first.verified_injected, 1)
+        meta, _ = parse_frontmatter(
+            (self.root / "concepts/existing.md").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            meta["verified"],
+            [
+                {"by": "human:chottokun", "at": "2026-11-27"},
+                {"by": "process:okf-morning-audit", "at": "2026-11-26"},
+            ],
+        )
+        self.assertNotIn("verified_at", meta)
+
+        second = convert_wiki_v03(self.root, write=True, verified_map_path=vmap_path)
+        self.assertEqual(second.files_changed, 0)
+        self.assertEqual(second.verified_injected, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

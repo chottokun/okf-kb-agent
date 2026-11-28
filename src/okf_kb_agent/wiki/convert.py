@@ -12,7 +12,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .frontmatter import FrontmatterError, parse_frontmatter
-from .model import WEB_SOURCE_KINDS, is_special, write_concept
+from .model import ProvenanceEvent, WEB_SOURCE_KINDS, is_special, write_concept
 
 __all__ = [
     "ConversionReport",
@@ -50,6 +50,8 @@ class ConversionReport:
     id_collisions: list[dict[str, str]] = field(default_factory=list)
     lossless_errors: list[dict[str, str]] = field(default_factory=list)
     changed_files: list[dict[str, Any]] = field(default_factory=list)
+    skipped_files: int = 0
+    parse_errors: list[dict[str, str]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -64,13 +66,18 @@ class ConversionReport:
             "id_collisions": list(self.id_collisions),
             "lossless_errors": list(self.lossless_errors),
             "changed_files": list(self.changed_files),
+            "skipped_files": self.skipped_files,
+            "parse_errors": list(self.parse_errors),
         }
 
     def format_text(self) -> str:
         mode = "APPLIED" if self.written else "DRY-RUN"
+        scan_line = f"  files scanned: {self.files_scanned}, changed: {self.files_changed}"
+        if self.skipped_files:
+            scan_line += f", skipped: {self.skipped_files}"
         lines = [
             f"okf convert-v03 ({mode}): {self.root}",
-            f"  files scanned: {self.files_scanned}, changed: {self.files_changed}",
+            scan_line,
             f"  sources converted: {self.converted_sources}",
             f"  verified injected: {self.verified_injected}, "
             f"x-okfkb-verified-at fallback: {self.verified_fallback}",
@@ -93,6 +100,10 @@ class ConversionReport:
         for item in self.lossless_errors:
             lines.append(
                 f"  LOSSLESS_ERROR: {item['rel']}: {item['raw']!r} ({item['reason']})"
+            )
+        for item in self.parse_errors:
+            lines.append(
+                f"  PARSE_ERROR: {item['rel']}: {item['error']}"
             )
         return "\n".join(lines)
 
@@ -321,11 +332,23 @@ def _convert_verified_stage(
     report: ConversionReport,
 ) -> str:
     """Stage 2: migrate ``verified_at`` via ``verified_map`` or fallback key."""
-    if verified_map is not None and rel in verified_map:
-        events = [dict(ev) for ev in verified_map[rel]]
+    if verified_map is not None and rel in verified_map and verified_map[rel]:
+        incoming = [dict(ev) for ev in verified_map[rel]]
+        existing_raw = meta.get("verified")
+        merged: list[dict[str, Any]] = []
+        if isinstance(existing_raw, Mapping):
+            merged.append(dict(existing_raw))
+        elif isinstance(existing_raw, list):
+            for item in existing_raw:
+                if isinstance(item, Mapping):
+                    merged.append(dict(item))
+        for ev in incoming:
+            if ev not in merged:
+                merged.append(ev)
+
         changed = False
-        if meta.get("verified") != events:
-            meta["verified"] = events
+        if meta.get("verified") != merged:
+            meta["verified"] = merged
             changed = True
         if "verified_at" in meta:
             meta.pop("verified_at")
@@ -360,7 +383,10 @@ def _load_verified_map(
     for rel, events in data.items():
         if not isinstance(rel, str) or not isinstance(events, list):
             raise ValueError(f"invalid verified-map entry for {rel!r}")
-        out[rel] = [dict(ev) for ev in events]
+        validated: list[dict[str, Any]] = []
+        for ev in events:
+            validated.append(ProvenanceEvent.from_mapping(ev).to_dict())
+        out[rel] = validated
     return out
 
 
@@ -386,7 +412,9 @@ def convert_wiki_v03(
         raw_text = path.read_text(encoding="utf-8")
         try:
             meta, body = parse_frontmatter(raw_text)
-        except FrontmatterError:
+        except FrontmatterError as exc:
+            report.skipped_files += 1
+            report.parse_errors.append({"rel": rel, "error": str(exc)})
             continue
 
         new_meta = copy.deepcopy(meta)

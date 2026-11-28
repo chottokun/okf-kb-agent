@@ -1498,6 +1498,34 @@ class TestEvidenceValidation(unittest.TestCase):
         self.assertFalse(report.ok)
         self.assertTrue(any("index.md" in e and "okf_version" in e for e in report.errors))
 
+    def test_empty_or_malformed_x_okfkb_verified_at_fails_and_triggers_p3(self):
+        write(self.root, "concepts/bad_empty.md", node(
+            "type: Concept\n"
+            "basis: external\n"
+            "sources:\n"
+            "  - id: patent-biblio-ep1\n"
+            "    resource: https://patents.google.com/patent/EP1\n"
+            "    x-okfkb-kind: patent-biblio\n"
+            'x-okfkb-verified-at: ""\n',
+            "# Bad Empty\n",
+        ))
+        write(self.root, "concepts/bad_fmt.md", node(
+            "type: Concept\n"
+            "basis: external\n"
+            "sources:\n"
+            "  - id: patent-biblio-ep2\n"
+            "    resource: https://patents.google.com/patent/EP2\n"
+            "    x-okfkb-kind: patent-biblio\n"
+            'x-okfkb-verified-at: "not-a-date"\n',
+            "# Bad Fmt\n",
+        ))
+        report = validate_wiki(self.root, check_orphans=False)
+        self.assertFalse(report.ok)
+        self.assertTrue(any("bad_empty.md" in e and "x-okfkb-verified-at" in e for e in report.errors))
+        self.assertTrue(any("bad_fmt.md" in e and "x-okfkb-verified-at" in e for e in report.errors))
+        self.assertTrue(any("bad_empty.md" in w and "[P3]" in w for w in report.warnings))
+        self.assertTrue(any("bad_fmt.md" in w and "[P3]" in w for w in report.warnings))
+
 
 if __name__ == "__main__":
     unittest.main()

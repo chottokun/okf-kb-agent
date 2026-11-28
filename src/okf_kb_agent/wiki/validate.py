@@ -161,16 +161,14 @@ def _extract_verification(meta: Mapping[str, Any]) -> tuple[bool, date | None]:
 
     x_verified_at = meta.get("x-okfkb-verified-at")
     verified_at = meta.get("verified_at")
+    has_legacy_date = False
     for raw_date in (x_verified_at, verified_at):
         parsed_d = _parse_event_date(raw_date)
         if parsed_d is not None:
+            has_legacy_date = True
             dates.append(parsed_d)
 
-    has_verification = (
-        has_verified_event
-        or x_verified_at is not None
-        or verified_at is not None
-    )
+    has_verification = has_verified_event or has_legacy_date
     return has_verification, (max(dates) if dates else None)
 
 _UNVERIFIED_ALERT_START_RE = re.compile(

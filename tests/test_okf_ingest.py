@@ -337,7 +337,7 @@ class IngestTests(unittest.TestCase):
         ingest_publication(full_client, "EP9999999B1", self.root, now=LATER)
         meta_after, body_after = self.read("patents/EP9999999B1.md")
         self.assertEqual(meta_after["timestamp"], LATER)
-        self.assertEqual(meta_after["x-okfkb-verified-at"], "2026-10-29")
+        self.assertEqual(meta_after["x-okfkb-verified-at"], "2026-11-11")
         self.assertIn(
             {
                 "id": "patent-claims-ep9999999b1",
@@ -363,10 +363,10 @@ class IngestTests(unittest.TestCase):
         ingest_publication(client, "EP9999999B1", self.root, now=LATER)
         meta, body = self.read("patents/EP9999999B1.md")
         self.assertEqual(meta["timestamp"], LATER)
-        self.assertEqual(meta["x-okfkb-verified-at"], "2026-10-29")
+        self.assertEqual(meta["x-okfkb-verified-at"], "2026-11-11")
         self.assertNotIn("Manual trailing note.", body)
 
-    def test_reingestion_preserves_existing_generated_and_verified(self):
+    def test_reingestion_preserves_verified_and_advances_generated_on_change(self):
         from okf_kb_agent.wiki.frontmatter import dump_document
 
         failing_client = FakeEpo(
@@ -378,20 +378,43 @@ class IngestTests(unittest.TestCase):
         meta["generated"] = {"by": "okf-glm-runner/1", "at": "2026-10-29T12:00:00Z"}
         meta["verified"] = [{"by": "human:chottokun", "at": "2026-10-30"}]
         node_path.write_text(dump_document(meta, body), encoding="utf-8")
+        unchanged_bytes = node_path.read_bytes()
 
-        # Re-ingest with changed claims at a later timestamp: generated & verified must survive untouched
+        # Unchanged re-ingest leaves generated, verified, and x-okfkb-verified-at untouched
+        ingest_publication(failing_client, "EP9999999B1", self.root, now=LATER)
+        self.assertEqual(node_path.read_bytes(), unchanged_bytes)
+
+        # Substantively changed re-ingest preserves verified & generated.by, advances generated.at & x-okfkb-verified-at
         ingest_publication(FakeEpo(), "EP9999999B1", self.root, now=LATER)
         meta_after, body_after = self.read("patents/EP9999999B1.md")
         self.assertIn("A composition comprising an amorphous phase.", body_after)
         self.assertEqual(
             meta_after["generated"],
-            {"by": "okf-glm-runner/1", "at": "2026-10-29T12:00:00Z"},
+            {"by": "okf-glm-runner/1", "at": LATER},
         )
         self.assertEqual(
             meta_after["verified"],
             [{"by": "human:chottokun", "at": "2026-10-30"}],
         )
-        self.assertEqual(meta_after["x-okfkb-verified-at"], "2026-10-29")
+        self.assertEqual(meta_after["x-okfkb-verified-at"], "2026-11-11")
+
+    def test_reingestion_of_legacy_v02_note_drops_duplicate_verified_at(self):
+        from okf_kb_agent.wiki.frontmatter import dump_document
+
+        failing_client = FakeEpo(
+            claims_error=EpoApiError("not available", status=404)
+        )
+        ingest_publication(failing_client, "EP9999999B1", self.root, now=NOW)
+        node_path = self.root / "patents/EP9999999B1.md"
+        meta, body = self.read("patents/EP9999999B1.md")
+        meta.pop("x-okfkb-verified-at", None)
+        meta["verified_at"] = "2026-10-29"
+        node_path.write_text(dump_document(meta, body), encoding="utf-8")
+
+        ingest_publication(FakeEpo(), "EP9999999B1", self.root, now=LATER)
+        meta_after, _ = self.read("patents/EP9999999B1.md")
+        self.assertNotIn("verified_at", meta_after)
+        self.assertEqual(meta_after["x-okfkb-verified-at"], "2026-11-11")
 
 
 if __name__ == "__main__":

@@ -809,13 +809,71 @@ class ConceptTests(unittest.TestCase):
         valid = {
             "type": "Concept",
             "generated": {"by": "okf-glm-runner/1", "at": "2026-11-28T00:00:00Z"},
-            "sources": [{"resource": "https://example.com", "x-okfkb-kind": "web"}],
+            "sources": [
+                {
+                    "resource": "https://example.com",
+                    "x-okfkb-kind": "web",
+                    "x-okfkb-issued": "2026-11-01",
+                    "x-okfkb-retrieved": "2026-11-28",
+                    "x-okfkb-genre": "web",
+                }
+            ],
             "verified": [{"by": "process:okf-morning-audit", "at": "2026-11-28"}],
+            "x-okfkb-verified-at": "2026-11-28",
         }
         self.assertEqual(validate_meta(valid), [])
         self.assertTrue(validate_meta({"type": "Concept", "sources": [{"id": "missing-resource"}]}))
         self.assertTrue(validate_meta({"type": "Concept", "generated": {"by": "only-by"}}))
         self.assertTrue(validate_meta({"type": "Concept", "verified": ["not-a-mapping"]}))
+        self.assertTrue(validate_meta({
+            "type": "Concept",
+            "sources": [{"resource": "https://example.com", "x-okfkb-issued": "not-a-date"}],
+        }))
+        self.assertTrue(validate_meta({
+            "type": "Concept",
+            "sources": [{"resource": "https://example.com", "x-okfkb-retrieved": "2026-13-40"}],
+        }))
+        self.assertTrue(validate_meta({
+            "type": "Concept",
+            "sources": [{"resource": "https://example.com", "x-okfkb-genre": "blog"}],
+        }))
+        self.assertTrue(validate_meta({
+            "type": "Concept",
+            "x-okfkb-verified-at": "invalid-date",
+        }))
+
+    def test_dump_frontmatter_orders_x_okfkb_source_keys_canonically(self):
+        meta = {
+            "type": "Concept",
+            "sources": [
+                {
+                    "x-okfkb-genre": "paper",
+                    "x-okfkb-via": "arxiv",
+                    "x-okfkb-retrieved": "2026-11-28",
+                    "x-okfkb-snapshot": "snap1",
+                    "x-okfkb-issued": "2024-06-10",
+                    "x-okfkb-kind": "preprint",
+                    "resource": "https://arxiv.org/abs/2406.06484",
+                    "id": "arxiv-2406.06484",
+                }
+            ],
+        }
+        dumped = dump_frontmatter(meta)
+        expected = (
+            "---\n"
+            "type: Concept\n"
+            "sources:\n"
+            "  - id: arxiv-2406.06484\n"
+            "    resource: https://arxiv.org/abs/2406.06484\n"
+            "    x-okfkb-kind: preprint\n"
+            '    x-okfkb-issued: "2024-06-10"\n'
+            '    x-okfkb-retrieved: "2026-11-28"\n'
+            "    x-okfkb-via: arxiv\n"
+            "    x-okfkb-snapshot: snap1\n"
+            "    x-okfkb-genre: paper\n"
+            "---\n"
+        )
+        self.assertEqual(dumped, expected)
 
     def test_extract_links_transparent_headings_keep_parent_heading(self):
         body = (
