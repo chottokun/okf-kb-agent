@@ -513,7 +513,10 @@ def validate_provenance(
 
         # P3
         if not stub and basis == "external" and not has_verification:
-            warnings.append(("P3", f"{rel}: [P3] basis=external without verified_at"))
+            warnings.append((
+                "P3",
+                f"{rel}: [P3] basis=external without verified (or fallback x-okfkb-verified-at)",
+            ))
 
         # P4
         if not stub and basis in ("external", "mixed", None):
