@@ -51,7 +51,7 @@ trigger_conditions:
    - `uv run okf claims <wiki> --sample <N> --seed <S>` を実行し、`seed` を必ず記録する（`--note <slug>` で対象ノートに絞ることもできる）。
    - サンプル数 `N` の基準：新規／変更ノートの主張が **15 件以下なら全件**（`--sample` なし）、**それ以外は 15–20 件**。
 2. **証跡との照合**：
-   - 各サンプルについて、ノートの `sources` が指す引用元の証跡（`<wiki>/evidence/snapshots/`、全文、または `verify-source` キャッシュ）と照合する。
+   - `okf claims` は構造化された `sources` エントリ（`id` と `resource`、任意の `title`、`x-okfkb-*` を含む）を返す。各サンプルについて、ノートの `sources` エントリ（`id` / `resource`）が指す引用元の証跡（`<wiki>/evidence/snapshots/`、全文、または `verify-source` キャッシュ）と照合する。
    - 証跡の在りかは KB の運用型で異なる（詳細は `okf-design-conventions` §3）：paper-centric／ops-record 型では KB 内 `evidence/`（`arxiv/`・全文・`snapshots/`）が正本で、ファイル名ではなく `.meta.json` の URL／identifier で照合する。半導体 KB の Web スナップショットは共有キャッシュ（`data/external/source_verify`）側が正本。DOI メタデータと特許書誌のキャッシュ（verify-source／EPO OPS）は参照用で、KB へは複写しない。ローカル取り込みは frontmatter の識別子と本文中の証跡パス言及で解決する。
    - 結果は次の 3 値で記録する：
      - `supports`：証跡が主張の数値を裏付けている
@@ -77,7 +77,7 @@ trigger_conditions:
 
 - **相互監査**が本線、**自己監査**も正規ルートとする。いずれの場合も構築者と監査者を必ず記録する。
 - `contradicts` が 1 件でも出たユニットは昇格を止め、構築者が修正したうえで**影響範囲だけを再監査**する。
-- 監査の成果物は **verdict**（unit / verdict（pass または fail）/ auditor / date / claims_checked / contradictions）であり、昇格の機械的実行（ゲート再実行・照合つきコピー・記録追記）は verdict を入力とする決定的プロモータ（ハーネス層）が担う。監査者は本番 KB へ手作業でコピーしない。
+- 監査の成果物は **verdict**（unit / verdict（pass または fail）/ auditor / date / claims_checked / contradictions）であり、昇格の機械的実行（ゲート再実行・照合つきコピー・記録追記）は verdict を入力とする決定的プロモータ（ハーネス層）が担う。監査結果の検証記録はノートの `verified` リストへイベント `[{by, at}]`（監査アクター名、例: `process:okf-morning-audit` や `human:chottokun`）を追記することで残し、`verified_at` を編集してはならない（trust tier は保存せず消費者側が計算する）。監査者は本番 KB へ手作業でコピーしない。
 
 ## 7. 委譲先の明示
 

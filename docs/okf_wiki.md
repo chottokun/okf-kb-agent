@@ -1,4 +1,4 @@
-# OKF v0.2 LLM-Wiki（CPU/エッジ向け）
+# OKF v0.3 LLM-Wiki（CPU/エッジ向け）
 
 EPO データを取り込みながら、Markdown + YAML frontmatter だけで動く
 知識グラフ／検索基盤です。**Pattern A（〜500ノード、外部依存ゼロ）** と
@@ -16,7 +16,7 @@ EPO データを取り込みながら、Markdown + YAML frontmatter だけで動
 | 原則 | 実装 |
 | --- | --- |
 | 1トピック = 1ファイル | `*.md` を概念ノードとして扱う |
-| 最小限の frontmatter | 必須は `type` のみ。`title`/`description`/`tags`/`timestamp`/`resource` を推奨 |
+| 最小限の frontmatter | 必須は `type` のみ。`title`/`description`/`tags`/`sources`/`generated`/`verified` を推奨。ルート `index.md` は `okf_version: "0.3"` と `license: Apache-2.0` を宣言 |
 | 関係は相対リンク | `[表示名](../path/to.md)` が有向エッジ。外部 URL・画像・コード内リンクは除外 |
 | 段階的開示 | ルート `index.md` → セクション `index.md` → 個別ノード。上限超過は `index-2.md` へ分割 |
 | 追記ログ | `log.md` に取り込み履歴を残す |
@@ -93,41 +93,59 @@ OKF_MCP_TOKEN=change-me uv run okf-mcp --root . \
 
 ## 3. frontmatter 仕様
 
+ルート `index.md` は `okf_version: "0.3"`、`title`、`description`、`license: Apache-2.0` を宣言します。各概念ノートの標準 frontmatter は次のとおりです：
+
 ```yaml
 ---
 type: Patent                 # 必須（空文字不可）
 title: "ALLOY COMPOSITION..." # 推奨（無ければ最初の H1 → ファイル名）
 description: "..."           # 推奨（索引・検索に使用）
-resource: https://...        # 推奨（原典 URL）
-tags: [epo, patent, ep]      # 推奨（文字列のリスト）
+tags: [epo, patent, ep]      # 推奨（正規化済み文字列のリスト）
 timestamp: 2026-10-29T00:00:00Z
 scope: taxonomy              # taxonomy | workflow | synergistic | gotchas
 publication: EP9999999B1     # 任意（公報番号の直接参照）
 basis: external              # 任意（推奨）: external | model | mixed | ops-record
-sources:                     # 任意: 出典リスト
-  - "patent-biblio:EP9999999B1 via=epo-ops"
-  - "patent-claims:EP9999999B1 via=epo-ops"
-verified_at: "2026-10-29"    # 任意: 照合確認日（YYYY-MM-DD）
+sources:                     # 任意: OKF v0.3 エントリ形式の出典リスト
+  - id: patent-biblio-ep9999999b1
+    resource: https://patents.google.com/patent/EP9999999B1
+    x-okfkb-kind: patent-biblio
+    x-okfkb-via: epo-ops
+  - id: patent-claims-ep9999999b1
+    resource: https://patents.google.com/patent/EP9999999B1
+    x-okfkb-kind: patent-claims
+    x-okfkb-via: epo-ops
+generated:                   # 構築者が記録（{by, at}）
+  by: okf-glm-runner/1
+  at: "2026-11-28T00:00:00Z"
+verified:                    # 検証イベント列（[{by, at}]）
+  - by: process:okf-morning-audit
+    at: "2026-11-28T06:00:00Z"
 ---
 ```
 
 ### プロベナンス（出典・検証状態）仕様
 
 - **`basis`**: ノート記述内容の派生元を表す認識論的フラグ。
-  - `external`: 外部出典のみで裏付けられている（stub を除く全ノートで `sources` または external ノードへの相対リンク、および `verified_at` が必要）。
+  - `external`: 外部出典のみで裏付けられている（stub を除く全ノートで `sources` または external ノードへの相対リンク、および `verified` イベント（移行期は `x-okfkb-verified-at` / `verified_at` も受理）が必要）。
   - `model`: LLM の一般知識のみで書かれている。
   - `mixed`: 外部出典とモデルの一般知識が混在している（`sources` または external ノードへの相対リンクが必要）。
   - `ops-record`: 運用記録・実験ノート等、自身の記録そのものが一次根拠となっている。
-- **`sources`**: 出典文字列のリスト。
-  - 文法: `<kind>:<id>[ issued=YYYY-MM-DD][ retrieved=YYYY-MM-DD][ via=<channel>][ snapshot=<key>]`（空白区切り）
-  - 属性キー: `issued`（発行日）、`retrieved`（取得日）、`via`（取得経路。例: `epo-ops`, `epo-eps`）、`snapshot`（スナップショットキー。`ops-record` 出典で必須）
-  - `kind` 語彙（14種）と陳腐化プロファイル:
+- **`sources`**: OKF v0.3 エントリマッピングのリスト（移行期間中は旧 `<kind>:<id> ...` 文字列形式も読取り互換）。
+  - キー順は `id`、`resource`（必須）、任意の `title`、および固定接頭辞 `x-okfkb-` を持つ拡張キー（`x-okfkb-kind`, `x-okfkb-issued`, `x-okfkb-retrieved`, `x-okfkb-via`, `x-okfkb-genre`, `x-okfkb-snapshot` 等）の順で記述します。`x-okfkb-` 接頭辞は固定であり変更しません。
+  - `kind` 語彙（`x-okfkb-kind`）と陳腐化プロファイル:
     - 不変層: `patent-biblio`（特許書誌）, `patent-claims`（特許クレーム）, `paper`（査読論文）, `standard`（標準・規格）
     - 版管理層: `datasheet`（データシート）, `product-page`（製品ページ）, `patent-legal`（法的状態）
     - 揮発層（3年経過で P8 警告）: `press-release`（プレスリリース）, `news`（報道記事）, `preprint`（プレプリント）
-    - その他: `patent-family`（ファミリー情報・スタブ用）, `web`（一般Web）, `manual`（人手入力）, `ops-record`（内部記録）
-    - Web 系（`datasheet`, `product-page`, `press-release`, `standard`, `news`, `web`, `manual`）は `retrieved=YYYY-MM-DD` が必須（P6）。`ops-record` は内部記録のため `retrieved=` は不要。
-- **`verified_at`**: 本文が出典と矛盾しないことを照合した日（YYYY-MM-DD）。
+    - その他: `patent-family`（ファミリー情報・スタブ用）, `web`（一般Web）, `manual`（人手入力）, `ops-record`（内部記録）, `local-file`（ローカル素材）
+    - Web 系（`datasheet`, `product-page`, `press-release`, `standard`, `news`, `web`, `manual`）は `x-okfkb-retrieved`（`YYYY-MM-DD`）が必須（P6）。`ops-record` は内部記録のため `x-okfkb-retrieved` は不要です。
+- **`generated` / `verified`**:
+  - 構築者が `generated: {by, at}` を記録し、監査・検証時に `verified: [{by, at}]` へイベントを追記します。
+  - trust tier は消費者側が `verified` と `generated` から動的に計算し、ノートには保存しません。
+  - 旧 `verified_at` は移行変換時に裏付けがない場合のみ `x-okfkb-verified-at` として残ります。
+- **タグ正規化規則（2026-11-28 決定）**:
+  - 名前空間区切りはスラッシュ `/` とし、コロン `:` は使わない（例: `strand:agents` → `strand/agents`）。
+  - タグ内のドット `.` はハイフン `-` に置換する（例: `DeepSeek-V3.2` → `DeepSeek-V3-2`）。
+  - 名称の大文字・小文字は維持し、空白は含めない。正規化による衝突は自動解消せず人間へエスカレーションする。
 
 ### 本文の統制語彙（3対）
 
@@ -153,7 +171,10 @@ tags: [material, filler, nitride]
 scope: taxonomy
 basis: mixed
 sources:
-  - "patent-biblio:EP9999999B1 via=epo-ops"
+  - id: patent-biblio-ep9999999b1
+    resource: https://patents.google.com/patent/EP9999999B1
+    x-okfkb-kind: patent-biblio
+    x-okfkb-via: epo-ops
 ---
 # 窒化アルミニウム（AlN）フィラー
 
@@ -183,7 +204,7 @@ sources:
 <!-- okf-concept-skeleton:end -->
 
 - パーサは **依存ゼロ** の YAML サブセット（スカラー・インラインリスト・
-  ブロックリスト）。ネストしたマッピングは誤解釈を避けるためエラーにします。
+  ブロックリスト・`generated` マッピング・`sources` / `verified` 等のマッピングのブロックリスト）を扱います。
 - `scope` 省略時は `type`/`tags` から推定:
   `Gotcha` → gotchas、`Workflow`/`Procedure` → workflow、
   `Synergy`/`Synergistic` → synergistic、それ以外 → taxonomy。
@@ -331,7 +352,7 @@ uv run okf neighbors mywiki paged-attention --hops 2 --direction both --top-n 20
 | **構文・構造エラー (`validate_meta`)** | `type` 欠落、不正型、不正日付、未知の `scope`、`sources` 文法違反、リンク切れ、Wiki ルート脱出 | エラー（exit 1） | エラー（exit 1） |
 | **自己矛盾・拡張検証ルール (`P2`, `P4`, `P5`, `P9`)** | P2（external/mixed なのに sources も外部リンクも無し）、P4（未検証マーカー外のブロック局所裏付け欠落）、P5（external なのに未検証マーカー含有）、P9（未知の basis 値） | 警告（exit 0） | **エラー昇格（exit 1）** |
 | **証跡整合ルール (`E1`)**（`--check-evidence` 指定時） | E1（参照スナップショット・証跡の欠落・破損・墓石参照） | 警告（exit 0） | **エラー昇格（exit 1）** |
-| **品質・時点警告 (`P1`, `P3`, `P6`, `P7`, `P8`)** | P1（basis 未指定）、P3（external なのに verified_at 無し）、P6（Web 系 sources の retrieved 欠落）、P7（未知の source kind）、P8（揮発性ニュース出典の3年経過）、孤立ノード、index.md 欠落 | 警告（exit 0） | 警告（exit 0） |
+| **品質・時点警告 (`P1`, `P3`, `P6`, `P7`, `P8`)** | P1（basis 未指定）、P3（external なのに `verified` イベント無し；移行期は `x-okfkb-verified-at` / `verified_at` も受理）、P6（Web 系 sources の `x-okfkb-retrieved` 欠落）、P7（未知の source kind）、P8（揮発性ニュース出典の3年経過）、孤立ノード、index.md 欠落 | 警告（exit 0） | 警告（exit 0） |
 | **証跡監査警告 (`E2`, `E3`)**（`--check-evidence` 指定時） | E2（理由未記録の孤立スナップショット）、E3（メタデータ欠落ファイルまたは本体欠損ファイル） | 警告（exit 0） | 警告（exit 0） |
 | **レガシー証跡警告 (`E4`)**（`--check-evidence` 指定時） | E4（サイドカー未作成のレガシー arXiv 証跡 = 検証不能・破損ではない） | 警告（exit 0） | 警告（exit 0・昇格対象外） |
 
@@ -793,10 +814,10 @@ uv run okf verify-source "https://example.com/unadopted.html" \
 - **JaLC / DataCite フォールバック**: Crossref 404 時、`doi.org/ra` で登録機関を判定。JaLC は JaLC REST API、DataCite 等は `doi.org` CSL-JSON content negotiation でメタデータを解決。
 - **arXiv ID**: `export.arxiv.org` の Atom XML から書誌・abstract を抽出。出版版 DOI（`<arxiv:doi>`）があれば警告とメタデータに記録。
 - **Web URL**: `data/external/source_verify/snapshots/` に本文 `<key>.<ext>` と `.meta.json` サイドカー（`sha256`, `extracted_publisher`, `extracted_issued`, `retrieved_at`）をアトミック保存。PDF は `pypdf`（`--extra pdf`）でテキスト抽出し `--check-claim` を検証。
-- **ローカルファイル (`--file`)**: ネットワーク通信を行わず、指定ファイルの SHA-256 を計算し `snapshots/local_<sha256[:16]>.<ext>` へ保全コピー・テキスト抽出・`.meta.json` 生成を行う。`okf_source` は `local-file:<name> retrieved=YYYY-MM-DD via=local-file snapshot=local_<sha256[:16]>` 形式で生成される（`--issued` 指定時のみ `issued=YYYY-MM-DD` が付与）。これは「受け取ったバイト列の同一性」を保全・検査する機構であり、ファイル出所の真偽は保証しない。同一内容・別ファイル名の素材を取り込んだ場合は内容ハッシュにより同じスナップショットを共有し、`.meta.json` の `original_filename` には最初に取り込んだファイル名が保持される。また `.md` 素材は `okf validate` が概念ノートとして誤パースするのを防ぐため `.txt` 拡張子で保存される。
+- **ローカルファイル (`--file`)**: ネットワーク通信を行わず、指定ファイルの SHA-256 を計算し `snapshots/local_<sha256[:16]>.<ext>` へ保全コピー・テキスト抽出・`.meta.json` 生成を行う。JSON 出力の主契約は `okf_source_entry`（v0.3 エントリ形式: `id`, `resource`, `x-okfkb-kind: local-file`, `x-okfkb-retrieved`, `x-okfkb-via: local-file`, `x-okfkb-snapshot: local_<sha256[:16]>`, `--issued` 指定時は `x-okfkb-issued`）であり、レガシー文字列形式 `okf_source` も互換のため併記される。これは「受け取ったバイト列の同一性」を保全・検査する機構であり、ファイル出所の真偽は保証しない。同一内容・別ファイル名の素材を取り込んだ場合は内容ハッシュにより同じスナップショットを共有し、`.meta.json` の `original_filename` には最初に取り込んだファイル名が保持される。また `.md` 素材は `okf validate` が概念ノートとして誤パースするのを防ぐため `.txt` 拡張子で保存される。
 
 ### 終了コード契約
-- `0` (`verified`): 実在確認および期待条件（`--expect-*`, `--check-claim`）の照合成功。`okf_source` 文字列を生成。
+- `0` (`verified`): 実在確認および期待条件（`--expect-*`, `--check-claim`）の照合成功。`okf_source_entry`（v0.3 主契約）および `okf_source`（レガシー文字列）を生成。
 - `1` (`not_found` / `mismatch` / `unverified`): 出典不在、書誌不一致、ペイウォール（HTTP 403）、または主張文字列の不一致。
 - `2` (`error`): 引数不正、API 障害、HTTP 429 リトライ超過、オフライン時のキャッシュミス。
 
