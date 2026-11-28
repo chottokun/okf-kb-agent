@@ -20,9 +20,9 @@ Grounding is split in two stages. **The abstract confirms identity; the full tex
 - **Stage 2 - Substance (full text)**: The 手法 and 結果 sections are written from the full text. 主張 claims that do not appear in the abstract must be confirmed in the full text before writing. 限界と前提 comes from the paper itself (the authors' own limitation statements, experimental setup assumptions) - never inferred from the abstract.
 - **Acquisition routes** (record the route used for each note in its 履歴メモ):
   - **Route A (arXiv, default)**: The arXiv HTML full text (`arxiv.org/html/<id>v<n>`) first; the PDF when no HTML exists. The grounding anchor is the arXiv ID + version (version grounding: okf-design-conventions section 5).
-  - **Route B (no arXiv version)**: The proceedings / publisher page, taken as a web-tier source (fetch + content match + snapshot) with `retrieved=` in `sources:` (precedent: Orca for continuous-batching).
-  - **Route C (official repositories / documentation)**: Web sources with `retrieved=`; when a claim depends on a specific release or commit, name that version in the note body and in `sources:` (okf-design-conventions section 5).
-- If the version read differs from the version verified (e.g. a new arXiv version appeared after verification), re-ground to the version actually read and align `verified_at` and the 履歴メモ with it (okf-design-conventions section 5).
+  - **Route B (no arXiv version)**: The proceedings / publisher page, taken as a web-tier source (fetch + content match + snapshot) with `x-okfkb-retrieved` in entry-form `sources:` (precedent: Orca for continuous-batching).
+  - **Route C (official repositories / documentation)**: Entry-form web sources with `x-okfkb-retrieved`; when a claim depends on a specific release or commit, name that version in the note body and in `sources:` (okf-design-conventions section 5).
+- If the version read differs from the version verified (e.g. a new arXiv version appeared after verification), re-ground to the version actually read and align verification (`verified` / 履歴メモ) with it (okf-design-conventions section 5).
 
 | Note section | Abstract suffices? | Full text required? |
 | :--- | :--- | :--- |
@@ -45,8 +45,9 @@ Grounding is split in two stages. **The abstract confirms identity; the full tex
 ### Note Form (Paper-Centric)
 
 - Body: 7 sections - 問い / 主張 / 手法 / 結果 / 限界と前提 / 関連概念 / 履歴メモ. The 結果 section carries mandatory condition fields for every number (paired with the Numeric Grounding Discipline above).
+- Frontmatter (OKF v0.3): entry-form `sources:` (`id`, `resource`, optional `title`, `x-okfkb-kind`, `x-okfkb-issued`, `x-okfkb-retrieved`, `x-okfkb-via`, `x-okfkb-genre`, other attributes as `x-okfkb-*`; prefix `x-okfkb-` is fixed); builders record `generated: {by, at}`; audit/verification appends `verified: [{by, at}]`; trust tiers are computed by consumers, never stored.
 - `basis`: `external` by default; `mixed` when the author's own synthesis, comparison, or experiment notes materially enter the note (declare this in 履歴メモ).
-- Strand tags: exactly one primary Tier A `strand:` tag per note (okf-design-conventions section 4; in `kb-ai-research`: `strand:inference-serving`, `strand:agents`, `strand:bert-applications`). Secondary strand tags may be added; aggregation is by the primary tag.
+- Strand tags: exactly one primary Tier A `strand/` tag per note (okf-design-conventions section 4; in `kb-ai-research`: `strand/inference-serving`, `strand/agents`, `strand/bert-applications`; slash separator, never colons, dots become hyphens, case preserved, no spaces). Secondary strand tags may be added; aggregation is by the primary tag.
 - Declare the grounding route (A/B/C) and depth in 履歴メモ (see Two-Stage Grounding).
 - References to other KBs' concepts are by slug mention only, never relative links (okf-design-conventions section 6).
 
@@ -66,9 +67,10 @@ Grounding is split in two stages. **The abstract confirms identity; the full tex
 - Route B / C web evidence follows the standard snapshot + `.meta.json` handling in source-verify and is covered by `check-evidence` as usual.
 - At batch preflight, confirm the tool's current evidence behaviour (sidecar format, resolution rules, count semantics) against okf-design-conventions sections 3 and 7; where the tool's settled spec differs from this profile, the tool spec wins and the discrepancy is recorded in the batch report.
 
-### Freshness (Paper-Centric Notes)
+### Freshness & Provenance (Paper-Centric Notes)
 
-- `verified_at` is the date the note was grounded against the original source - for this profile, the full-text grounding date - not the date the note was written (freshness model: okf-design-conventions section 2).
+- Builders record `generated: {by, at}` when authoring/updating the note.
+- Verification is recorded as `verified: [{by, at}]` events (against the original source — for this profile, the full-text grounding). Trust tiers are computed by consumers, never stored; legacy `verified_at` survives only as `x-okfkb-verified-at` after conversion (freshness model: okf-design-conventions section 2).
 - When an arXiv version bump changes a paper's claims, update the note and record the change in 履歴メモ. A superseded positioning claim is marked deprecated, never silently rewritten (okf-design-conventions section 2). No new gate is created for this.
 
 ### Audit Points (Profile-Specific)

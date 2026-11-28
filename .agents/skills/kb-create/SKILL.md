@@ -27,12 +27,12 @@ trigger_conditions:
 KB の原本は Drive の OKF ルート直下に置く（新しい KB は Drive で生まれるのが既定）。
 
 1. Drive 側に `<slug>/` を作り、サードのマウント（`~/okf-drive/<slug>`）から見えることを確認する。
-2. `okf init <dir>` で index／log／エージェントガイドを生成する。
+2. `okf init <dir>` で index／log／エージェントガイドを生成する。生成されるルート `index.md` の frontmatter には `okf_version: "0.3"` と `license: Apache-2.0` を宣言する（`title` / `description` も必要に応じて設定）。
 3. プロファイルに従い `concepts/` と証跡の置き場（`evidence/` 配下の構成、共有キャッシュ型かどうか）を用意する。証跡運用は KB の型で決まる（kb-audit の証跡節と `okf-design-conventions` §3・§7）。
 
 ## 2. 種の投入（Stage 1 全件検証）
 
-新しいドメインの KB は `kb-batch-discipline` の **Stage 1: Full Verification** で種を入れる：staging で起草し、トピック外ノードを除き、ゲート全緑（validate／index --check／links）を確認し、全ノートを出典と照合してから本番へ merge する。昇格後の運用は通常の成長ループ（kb-intake → 構築 → kb-audit）に移る。
+新しいドメインの KB は `kb-batch-discipline` の **Stage 1: Full Verification** で種を入れる：staging で起草し（ノートの `sources:` には OKF v0.3 エントリ形式 `id` / `resource` / `x-okfkb-*` と `generated: {by, at}` を使用）、トピック外ノードを除き、ゲート全緑（validate／index --check／links）を確認し、全ノートを出典と照合してから本番へ merge する。昇格後の運用は通常の成長ループ（kb-intake → 構築 → kb-audit）に移る。
 
 ## 3. 配線チェックリスト
 

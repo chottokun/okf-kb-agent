@@ -1,6 +1,6 @@
 ---
 name: OKF Wiki Operations
-description: Operate an OKF v0.2 Markdown knowledge base safely with progressive disclosure, bounded context, weighted traversal, validation and relative links.
+description: Operate an OKF v0.3 Markdown knowledge base safely with progressive disclosure, bounded context, weighted traversal, validation and relative links.
 trigger_conditions:
   - okf
   - OKF
@@ -14,21 +14,19 @@ trigger_conditions:
 
 # OKF Wiki Operations
 
-Use this skill for reading, searching, validating or updating an OKF v0.2
+Use this skill for reading, searching, validating or updating an OKF v0.3
 Markdown wiki. It is a **tool-first** skill: deterministic work belongs to the
 `okf` CLI, while this document covers judgement, order and safety.
 
 ## Non-negotiables
 
-- Markdown is the source of truth. Never make a vector store or SQLite index
-  authoritative.
+- Markdown is the source of truth. Never make a vector store or SQLite index authoritative.
 - One topic = one Markdown file.
-- Every concept has YAML frontmatter with a mandatory `type`.
-- Internal links are GitHub-style relative Markdown links:
-  `[label](../path/to/note.md)`. Never use `[[WikiLink]]`; validation warns.
+- Every concept has YAML frontmatter with mandatory `type`; root `index.md` declares `okf_version: "0.3"` and `license: Apache-2.0`.
+- OKF v0.3 provenance: `sources` are entry mappings (`id`, `resource`, optional `title`, fixed `x-okfkb-*` keys such as `x-okfkb-kind`, `x-okfkb-issued`, `x-okfkb-retrieved`, `x-okfkb-via`, `x-okfkb-genre`); builders record `generated: {by, at}`; verification is `verified: [{by, at}]` (tiers computed by consumers, never stored; legacy `verified_at` → `x-okfkb-verified-at`).
+- Internal links are GitHub-style relative Markdown links: `[label](../path/to/note.md)`. Never use `[[WikiLink]]`; validation warns.
 - Never hand-edit generated `index.md`, `index-2.md`, or `.okf/` files.
-- Preserve existing frontmatter and user-authored prose unless the task
-  explicitly asks for a rewrite.
+- Preserve existing frontmatter and user-authored prose unless the task explicitly asks for a rewrite.
 - Run validation after mutations and regenerate indexes with `okf index`.
 
 ## Phase 1: orientation only
@@ -147,7 +145,7 @@ review the per-query baseline/expanded results.
 Follow these 5 steps when creating or updating notes:
 
 1. **Avoid duplicates**: Search (`okf search`) before creating; prefer updating over creating a duplicate.
-2. **Choose type and basis**: Determine `type` (e.g. `Concept`) and epistemic `basis` (`external`, `mixed`, `model`, or `ops-record`). Notes with `basis: ops-record` cite internal record snapshots using `sources: ['ops-record:<path>[#<section>] snapshot=<key>']`. User-supplied local materials ingested via `okf verify-source --file` use `sources: ['local-file:<filename> retrieved=YYYY-MM-DD via=local-file snapshot=<key>']`.
+2. **Choose type and basis**: Determine `type` (e.g. `Concept`) and epistemic `basis` (`external`, `mixed`, `model`, or `ops-record`). Notes with `basis: ops-record` cite internal record snapshots as entry mappings (`id`, `resource`, `x-okfkb-kind: ops-record`, `x-okfkb-snapshot: <key>`). User-supplied local materials ingested via `okf verify-source --file` use entry mappings (`id`, `resource`, `x-okfkb-kind: local-file`, `x-okfkb-retrieved: YYYY-MM-DD`, `x-okfkb-via: local-file`, `x-okfkb-snapshot: <key>`). Record `generated: {by, at}` in frontmatter when building notes.
 3. **Select skeleton**: Include 4 major H2 scopes (`Taxonomy`, `Workflow / Implementation`, `Synergistic Combinations`, `Gotchas / Anti-Pitfalls`).
 4. **Isolate unverified metrics and back claims**: Place unverified unit metrics inside `> [!NOTE] 一般知識（未検証）` (or `General Knowledge (Unverified)`). For mixed tables, mark column headers with `（一般知識・未検証）` or `(Unverified)`. Back claims with links under `**代表公報（実データ）:**` (or `Representative Patents (Verified):`) and declare `sources`. Controlled H3 `### 出典に基づく整理` (`Based on Sources`) is transparent. Verify external papers/web sources/local files with `okf verify-source` (see `.agents/skills/source-verify/SKILL.md`).
 5. **Verify immediately**: Run `okf validate <wiki>`, `okf index <wiki>`, and `okf links <wiki>` to confirm zero `[P1]`–`[P9]` warnings and check for `zero_inbound` or unreachable concepts. For multi-concept batches, orchestrate staging, closing gates, and delegation via `.agents/skills/kb-batch-discipline/SKILL.md`.
@@ -162,7 +160,10 @@ tags: [material, filler, nitride]
 scope: taxonomy
 basis: mixed
 sources:
-  - "patent-biblio:EP9999999B1 via=epo-ops"
+  - id: patent-biblio-ep9999999b1
+    resource: https://patents.google.com/patent/EP9999999B1
+    x-okfkb-kind: patent-biblio
+    x-okfkb-via: epo-ops
 ---
 # 窒化アルミニウム（AlN）フィラー
 
@@ -239,9 +240,7 @@ uv run okf evolve <wiki> \
 
 ## Failure handling
 
-- `backend unavailable`: fall back to `--backend local`; Pattern A has no
-  optional dependencies.  A missing Qdrant/ONNX/Gemma endpoint is expected to
-  fail closed rather than silently changing semantics.
+- `backend unavailable`: fall back to `--backend local`; Pattern A has no optional dependencies. A missing Qdrant/ONNX/Gemma endpoint is expected to fail closed rather than silently changing semantics.
 - `broken link`: fix the target path or add the missing note; do not hide it.
 - `stale index`: run `okf index`; never patch index files manually.
 - `seed not found`: use `okf search` to resolve a path, then retry.

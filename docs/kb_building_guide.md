@@ -1,6 +1,6 @@
 # OKF ナレッジベース（KB）構築実践ガイド
 
-本書は、第三者が `okf-kb-agent` を用いて新しい OKF v0.2 Markdown ナレッジベース（KB）をゼロから立ち上げ、証拠に裏付けられた高品質な知識グラフを構築・拡張するための実践手順書です。
+本書は、第三者が `okf-kb-agent` を用いて新しい OKF v0.3 Markdown ナレッジベース（KB）をゼロから立ち上げ、証拠に裏付けられた高品質な知識グラフを構築・拡張するための実践手順書です。
 
 > [!TIP]
 > 本ガイドと併せて、CLI の詳細仕様は [okf_wiki.md](okf_wiki.md)、設計思想の背景や落とし穴の詳細は [design_rationales.md](design_rationales.md) を参照してください。
@@ -34,9 +34,9 @@ uv run okf init my-kb --skills-dir .agents/skills
 |---|---|---|---|
 | **特許＋Web技術調査型** | EPO/USPTO 特許、データシート、査読論文 | 共有キャッシュ（`data/external/source_verify`）または KB 内 `evidence/` | 産業技術・材料・特許調査 |
 | **論文中心型** | arXiv プレプリント、学会論文（DOI） | KB 内 `evidence/arxiv/` ＋ `evidence/fulltext/` | AI/CS 研究、学術サーベイ |
-| **運用知見・手順型** | 内部手順書、設定・実験ログ（`ops-record:`） | KB 内 `evidence/*.txt` ＋ `.meta.json` | チーム・システム運用ノウハウ |
+| **運用知見・手順型** | 内部手順書、設定・実験ログ（`x-okfkb-kind: ops-record`） | KB 内 `evidence/*.txt` ＋ `.meta.json` | チーム・システム運用ノウハウ |
 
-> いずれの型でも、利用者手元のローカル素材（PDF・仕様メモ等）を `okf verify-source --file` で `local-file:` 出典として `<wiki>/evidence/snapshots/` に保全取り込みできます。
+> いずれの型でも、利用者手元のローカル素材（PDF・仕様メモ等）を `okf verify-source --file` で `x-okfkb-kind: local-file` 出典として `<wiki>/evidence/snapshots/` に保全取り込みできます。また、ルート `index.md` には `okf_version: "0.3"` と `license: Apache-2.0` を宣言します。
 
 ---
 
@@ -50,7 +50,8 @@ uv run okf candidate-check --json my-kb concept-a concept-b concept-c
 
 * `name_occupied` が `null` 以外であれば、すでに同名の概念が存在するため作成を中止または既存ノートの拡充に切り替えます。
 * **タグ設計のベストプラクティス**:
-  * **Tier A タグ**: 概念自身の `slug` や分類用の名前空間タグ（例: `strand:inference-serving`）など、表記揺れを許さない固定語彙。
+  * **Tier A タグ**: 概念自身の `slug` や分類用の名前空間タグ（例: `strand/inference-serving`）など、表記揺れを許さない固定語彙。
+  * **タグ正規化規則**: 名前空間区切りはスラッシュ `/` としコロン `:` は使わない（`strand:agents` → `strand/agents`）。タグ内のドット `.` はハイフン `-` へ置換する（`DeepSeek-V3.2` → `DeepSeek-V3-2`）。大文字・小文字は維持し空白は含めない。正規化衝突は自動解消せず人間へエスカレーションする。
   * **Tier B タグ**: 自由記述タグ。**「検索」「エージェント」「推論」などの汎用すぎる一般カテゴリ語を単独でタグに入れないでください。** 検索エンジンはタグに高い重み（15点）を置くため、汎用タグを入れると他の既存概念の検索1位を奪う回帰の原因になります。固有の手法名・システム名を優先してください。
 
 ---
@@ -77,7 +78,7 @@ uv run okf verify-source --file ./materials/report.pdf \
 
 ### 確認すべきポイント
 1. **Identity の確認**: `--json` 出力の `metadata.title` と `metadata.url`（バージョン付き）を確認し、意図した論文・版と一致していることを確かめます。誤った ID を指定していないかを執筆前にここで水際防止できます。
-2. **`okf_source` の転記**: 出力された `okf_source` 文字列（例: `"preprint:arXiv:2309.06180 issued=2023-09-12 retrieved=2026-11-14 via=arxiv"` やローカル素材 `"local-file:report.pdf retrieved=2026-11-14 via=local-file snapshot=local_<sha256先頭16桁>"`）をそのままノートの `sources:` に使います（`--issued YYYY-MM-DD` を付けた場合のみ `issued=` が含まれ、角括弧は入りません）。
+2. **`okf_source_entry` の転記**: 出力された `okf_source_entry`（OKF v0.3 エントリマッピング: `id`, `resource`, 任意の `title`, 固定接頭辞 `x-okfkb-*` の属性群）をそのままノートの `sources:` に使います（`okf_source` はレガシー文字列形式としてのみ出力されます）。
 3. **ローカル素材取り込み（`--file`）の仕様と境界**:
    * `verify-source --file` が保証するのは「受け取ったバイト列の同一性（SHA-256）」であり、ファイル出所の真偽は保証しません。
    * `.md` / `.markdown` ファイルを渡した場合でも、`snapshots/` には `.txt` 拡張子で保全されるため `okf validate` に誤パースされません（元ファイル名・元拡張子は `.meta.json` に保持）。
@@ -99,12 +100,22 @@ uv run okf verify-source --file ./materials/report.pdf \
 type: Concept
 title: "概念の日本語タイトル（英語略称など）"
 description: "1〜2文の簡潔な要約。"
-tags: [concept-slug, strand:category, SpecificMethodName]
+tags: [concept-slug, strand/category, DeepSeek-V3-2]
 scope: taxonomy
 basis: external
 sources:
-  - "preprint:arXiv:2309.06180 issued=2023-09-12 retrieved=2026-11-14 via=arxiv"
-verified_at: "2026-11-14"
+  - id: arxiv-2309.06180
+    resource: https://arxiv.org/abs/2309.06180
+    x-okfkb-kind: preprint
+    x-okfkb-issued: "2023-09-12"
+    x-okfkb-retrieved: "2026-11-14"
+    x-okfkb-via: arxiv
+generated:
+  by: okf-glm-runner/1
+  at: "2026-11-28T00:00:00Z"
+verified:
+  - by: process:okf-morning-audit
+    at: "2026-11-28T06:00:00Z"
 ---
 ```
 

@@ -1,6 +1,6 @@
 ---
 name: OKF Design Conventions
-description: Apply the settled OKF design conventions — controlled value domains, freshness by verified_at and deprecation, KB-internal evidence, two-tier tags, version grounding, cross-KB references, correct gate invocations, and skill file layout — when designing a KB, adding controlled values, or running validation gates.
+description: Apply the settled OKF design conventions — controlled value domains, OKF v0.3 sources/generated/verified, freshness by verified events and deprecation, KB-internal evidence, two-tier tags and tag normalization, version grounding, cross-KB references, correct gate invocations, and skill file layout — when designing a KB, adding controlled values, or running validation gates.
 trigger_conditions:
   - design conventions
   - 設計規約
@@ -39,16 +39,23 @@ snapshots).
   the decision layer (skill / owner). See the AGENTS.md convention
   「事実に重みを焼き込まない」.
 
-## 2. Freshness = verified_at + deprecated
+## 2. OKF v0.3 Format, Freshness & Provenance (`generated` / `verified` / `deprecated`)
 
-- Freshness is two facts: `verified_at` (the date the note was last confirmed
-  against its source) and a `deprecated` judgement when an item is superseded.
-- No age threshold ("stale after N days") is ever baked into a tool or a gate.
-  Readers judge staleness from the date plus the deprecation mark.
-- A superseded item is marked deprecated and kept visible; it is never silently
-  rewritten as if it had always been current.
-- When a note's `verified_at` is refreshed, refresh its evidence snapshot in
-  the same pass (snapshot drift is recorded, in the note's history memo).
+- **House format is OKF v0.3**:
+  - Root `index.md` declares `okf_version: "0.3"` and bundle `license: Apache-2.0`.
+  - `sources` are entry mappings with fixed key order for stable diffs: `id`, `resource`, optional `title`, and extension keys (`x-okfkb-kind`, `x-okfkb-issued`, `x-okfkb-retrieved`, `x-okfkb-via`, `x-okfkb-genre`, and any other attributes as `x-okfkb-*`).
+  - **Standing decision (2026-11-28)**: the extension key prefix `x-okfkb-` (producer `okf-kb-agent`) is **FIXED** and must never change.
+  - `id` derivation: lowercase and sanitize non-`[a-z0-9._-]` runs to `-` (strip leading/trailing `-`); `preprint` arXiv → `arxiv-<id>`, `paper` DOI → `doi-<doi>`, `patent-*` → `patent-<subkind>-<pub>` (always include subkind), web → `web-<host-path-slug>` (append `sha256[:8]` of full URL if query present or slug > 48 chars), `ops-record`/`local-file` → `snapshot` value or slug; append `-2`, `-3` on intra-note collision.
+- **Provenance & verification (`generated` / `verified`)**:
+  - Builders record `generated: {by, at}` (e.g. `okf-glm-runner/1`).
+  - Verification is an events list `verified: [{by, at}]` (e.g. `process:okf-morning-audit`, `human:chottokun`).
+  - Trust tiers are computed by consumers from `verified` and `generated`, **never stored** in notes.
+  - Legacy `verified_at` survives only as `x-okfkb-verified-at` after conversion when unbacked by an audit record.
+- **Freshness**:
+  - Freshness is two facts: `verified` events (when the note was last confirmed against its source) and a `deprecated` judgement when an item is superseded.
+  - No age threshold ("stale after N days") is ever baked into a tool or a gate. Readers judge staleness from the verification dates plus the deprecation mark.
+  - A superseded item is marked `deprecated` and kept visible; it is never silently rewritten as if it had always been current.
+  - When a note's verification is refreshed, refresh its evidence snapshot in the same pass (snapshot drift is recorded in the note's history memo).
 
 ## 3. Evidence Layout (KB-internal, self-contained)
 
@@ -68,14 +75,19 @@ snapshots).
   root (or pass that path explicitly). Ops-record and paper-centric KBs use
   their KB-internal `evidence/`.
 
-## 4. Two-Tier Tags
+## 4. Two-Tier Tags & Tag Normalization
 
 - Tier A (canonical; no drift; additions are deliberate extensions only): tags
   carrying synonym / ownership / aggregation meaning — manual synonym-group
   words, title-derived abbreviations and formal variants, the concept slug
   itself, explicit `tier_a_tags`, and namespaced classification tags such as
-  `strand:<name>` in kb-ai-research.
+  `strand/<name>` in kb-ai-research.
 - Tier B: free descriptive tags; variation is acceptable. **Avoid standalone generic category words** (e.g. `エージェント`, `検索`, `推論` in Japanese/bi-gram-indexed KBs) because tags receive high field weight (15 pts per matched token/bi-gram) and generic tags can hijack Top-1 search rankings from existing sibling concepts; prefer specific method, system, or mechanism names instead.
+- **Tag normalization rule (owner decision 2026-11-28)**:
+  - Namespace separator is `/` — colons (`:`) are not used in tags (`strand:agents` → `strand/agents`).
+  - Dots (`.`) in tags become hyphens (`-`) (`DeepSeek-V3.2` → `DeepSeek-V3-2`).
+  - Letter case of names is preserved; no spaces.
+  - A normalization collision is escalated to a human, never auto-resolved.
 - Tag collisions are facts reported for post-batch cleanup (see
   kb-batch-discipline); they are never selection-time failures and are never
   silenced at write time.
@@ -85,8 +97,8 @@ snapshots).
 - Claims ground to the version actually read: arXiv → ID + version number;
   when a conference version exists it is canonical and the difference from the
   arXiv version is noted in the history memo; repositories → name the
-  release/commit whenever a claim depends on it; web sources → `retrieved=`
-  date is mandatory (P6).
+  release/commit whenever a claim depends on it; web sources →
+  `x-okfkb-retrieved` date is mandatory (P6).
 - Living canonical documents (e.g. operational records such as TOOLS.md) are
   the current procedure; the snapshot in `evidence/` is the record of what was
   grounded at copy time. Drift between them is recorded, not hidden.

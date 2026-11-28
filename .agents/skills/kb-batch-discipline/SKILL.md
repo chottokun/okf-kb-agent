@@ -88,6 +88,7 @@ Every batch run must establish an isolated, resumable workspace before making an
 ## Closing with Evidence (No Silent Drops)
 
 A batch — or an individual concept within it — closes as `done` **only with objective evidence recorded in `<work-dir>/report.md`**:
+- Builders write OKF v0.3 entry-form `sources` (`id`, `resource`, optional `title`, `x-okfkb-*`) and record `generated: {by, at}` (never stored trust tiers; audit/verification appends `verified: [{by, at}]`).
 
 1. **Required Gate Outputs**: Paste the exact command and output for all four end-of-batch gate commands (three gate types: `validate`, `index` + `index --check`, `stats`) into `report.md`:
    ```bash
@@ -116,8 +117,8 @@ A batch — or an individual concept within it — closes as `done` **only with 
 For paper-centric KBs (e.g. `kb-ai-research`), this profile operationalizes the Phase-2 paper target. The full profile text is the reference file `.agents/skills/kb-batch-discipline/references/paper-centric-profile.md` in this skill folder - required reading before running such a batch. The essentials:
 
 - **Composition**: 3 papers per concept (1 defining original + 2 follow-up / rival / application); web sources only from official repositories / official technical blogs (guideline 0-2). Never pad a concept with unrelated papers to reach the count.
-- **Two-stage grounding**: the abstract confirms identity and adoption (stage 1); the full text grounds 手法 / 結果 / 限界と前提 (stage 2), acquired via route A (arXiv HTML/PDF), route B (proceedings as a web source with `retrieved=`), or route C (official repos/docs, release/commit pinned when a claim depends on it). Numbers are written only with their conditions (model / hardware / dataset / baseline); a number without conditions is a de-facto `[P4]` violation.
-- **Note form**: 7 sections （問い / 主張 / 手法 / 結果 / 限界と前提 / 関連概念 / 履歴メモ）; exactly one primary Tier A `strand:` tag; the grounding route and depth are declared in 履歴メモ - a mismatch between the declaration and reality is the heaviest audit return reason.
+- **Two-stage grounding**: the abstract confirms identity and adoption (stage 1); the full text grounds 手法 / 結果 / 限界と前提 (stage 2), acquired via route A (arXiv HTML/PDF), route B (proceedings as a web source with `x-okfkb-retrieved`), or route C (official repos/docs, release/commit pinned when a claim depends on it). Numbers are written only with their conditions (model / hardware / dataset / baseline); a number without conditions is a de-facto `[P4]` violation.
+- **Note form**: 7 sections （問い / 主張 / 手法 / 結果 / 限界と前提 / 関連概念 / 履歴メモ）; exactly one primary Tier A `strand/` tag; the grounding route and depth are declared in 履歴メモ - a mismatch between the declaration and reality is the heaviest audit return reason.
 - **Links**: link only to notes that exist at write time; not-yet-created concepts are bare slug text; convert slug mentions to links in the end-of-stage link-conversion pass.
 - **Evidence**: direct `verify-source` output with `--cache-dir <wiki>/evidence`; gates always pass `--evidence-dir <wiki>/evidence` explicitly (okf-design-conventions sections 3 and 7); pass requires `referenced` equal to the distinct arXiv snapshots across `sources:` and `missing` 0.
 
