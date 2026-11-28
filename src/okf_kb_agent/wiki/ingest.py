@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import quote
 
 from ..epo import EpoError, PublicationRef, normalize_docdb
+from .convert import convert_source_string
 from .frontmatter import FrontmatterError, parse_frontmatter
 from .index import write_indexes
 from .model import load_concept, write_concept
@@ -22,7 +23,13 @@ from .model import load_concept, write_concept
 __all__ = ["ingest_publication", "ingest_query"]
 
 _DATE_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})$")
-_VOLATILE_META_KEYS = frozenset({"timestamp", "verified_at"})
+_VOLATILE_META_KEYS = frozenset({
+    "timestamp",
+    "verified_at",
+    "x-okfkb-verified-at",
+    "generated",
+    "verified",
+})
 
 
 def ingest_publication(
@@ -151,11 +158,12 @@ def _patent_meta(compact: str, biblio: dict[str, Any],
     applicants = _names(biblio.get("applicants"))
     country = str(biblio.get("country") or compact[:2]).lower()
     tags = _dedupe(["epo", "patent", country])
-    sources = [f"patent-biblio:{compact} via=epo-ops"]
+    legacy_sources = [f"patent-biblio:{compact} via=epo-ops"]
     if claims_source == "EPO OPS":
-        sources.append(f"patent-claims:{compact} via=epo-ops")
+        legacy_sources.append(f"patent-claims:{compact} via=epo-ops")
     elif claims_source == "EPO EPS":
-        sources.append(f"patent-claims:{compact} via=epo-eps")
+        legacy_sources.append(f"patent-claims:{compact} via=epo-eps")
+    sources = [convert_source_string(item)[0] for item in legacy_sources]
     meta: dict[str, Any] = {
         "type": "Patent",
         "title": title,
@@ -167,7 +175,7 @@ def _patent_meta(compact: str, biblio: dict[str, Any],
         "publication": compact,
         "basis": "external",
         "sources": sources,
-        "verified_at": timestamp[:10],
+        "x-okfkb-verified-at": timestamp[:10],
     }
     if applicants:
         meta["applicants"] = applicants
@@ -243,7 +251,7 @@ def _stub_meta(compact: str, parent: str, timestamp: str) -> dict[str, Any]:
         "scope": "taxonomy",
         "publication": compact,
         "basis": "external",
-        "sources": [f"patent-family:{parent}"],
+        "sources": [convert_source_string(f"patent-family:{parent}")[0]],
     }
 
 
@@ -285,9 +293,28 @@ def _write_concept_if_changed(
     meta: dict[str, Any],
     body: str = "",
 ) -> bool:
-    if _is_substantively_unchanged(target, meta, body):
-        return False
-    write_concept(target, meta, body)
+    existing_meta: dict[str, Any] | None = None
+    if target.exists():
+        try:
+            existing_meta, existing_body = parse_frontmatter(
+                target.read_text(encoding="utf-8")
+            )
+            if (
+                _substantive_meta(existing_meta) == _substantive_meta(meta)
+                and existing_body == body
+            ):
+                return False
+        except (OSError, FrontmatterError):
+            existing_meta = None
+
+    new_meta = dict(meta)
+    if existing_meta is not None:
+        # Preserve existing trust/generation state so re-ingest does not
+        # silently invalidate prior verification events (OKF v0.3 §5.3).
+        for trust_key in ("generated", "verified", "x-okfkb-verified-at", "verified_at"):
+            if trust_key in existing_meta:
+                new_meta[trust_key] = existing_meta[trust_key]
+    write_concept(target, new_meta, body)
     return True
 
 

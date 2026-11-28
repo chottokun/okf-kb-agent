@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import posixpath
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -19,9 +20,13 @@ __all__ = [
     "GENRE_VALUES",
     "KNOWN_SOURCE_KINDS",
     "NEWS_SOURCE_KINDS",
+    "OKF_FORMAT_VERSION",
     "SCOPE_WEIGHTS",
     "SOURCE_ATTR_KEYS",
+    "SUPPORTED_OKF_VERSIONS",
+    "ProvenanceEvent",
     "SourceEntry",
+    "SourceRecord",
     "TRANSPARENT_HEADINGS",
     "WEB_SOURCE_KINDS",
     "Concept",
@@ -43,6 +48,9 @@ __all__ = [
     "validate_meta",
     "write_concept",
 ]
+
+OKF_FORMAT_VERSION = "0.2"
+SUPPORTED_OKF_VERSIONS: tuple[str, ...] = ("0.2", "0.3")
 
 SCOPE_WEIGHTS: dict[str, float] = {
     "taxonomy": 1.0,
@@ -121,6 +129,85 @@ class SourceEntry:
     id: str
     attrs: dict[str, str]
     raw: str
+
+
+@dataclass(frozen=True)
+class SourceRecord:
+    """Structured OKF v0.3 ``sources`` entry preserving all keys verbatim."""
+
+    resource: str
+    id: str | None = None
+    title: str | None = None
+    extensions: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> SourceRecord:
+        """Build a :class:`SourceRecord` from a frontmatter mapping."""
+        if not isinstance(data, Mapping):
+            raise ValueError("source entry mapping must be a mapping")
+        raw = dict(data)
+        resource = raw.get("resource")
+        if not isinstance(resource, str) or not resource.strip():
+            raise ValueError(
+                "structured source entry missing required 'resource' string")
+        entry_id = raw.get("id")
+        if entry_id is not None and not isinstance(entry_id, str):
+            raise ValueError("source entry 'id' must be a string")
+        title = raw.get("title")
+        if title is not None and not isinstance(title, str):
+            raise ValueError("source entry 'title' must be a string")
+        known = {"resource", "id", "title"}
+        extensions = {k: v for k, v in raw.items() if k not in known}
+        return cls(
+            resource=resource,
+            id=entry_id,
+            title=title,
+            extensions=extensions,
+            raw=raw,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a dict preserving all keys of this entry verbatim."""
+        if self.raw:
+            return dict(self.raw)
+        out: dict[str, Any] = {}
+        if self.id is not None:
+            out["id"] = self.id
+        out["resource"] = self.resource
+        if self.title is not None:
+            out["title"] = self.title
+        out.update(self.extensions)
+        return out
+
+
+@dataclass(frozen=True)
+class ProvenanceEvent:
+    """OKF v0.3 ``generated`` or ``verified`` event (``{by, at}``)."""
+
+    by: str
+    at: str
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> ProvenanceEvent:
+        """Build a :class:`ProvenanceEvent` from a ``{by, at}`` mapping."""
+        if not isinstance(data, Mapping):
+            raise ValueError("provenance event must be a mapping")
+        by = data.get("by")
+        at = data.get("at")
+        if not isinstance(by, str) or not by.strip():
+            raise ValueError("provenance event missing required 'by' string")
+        if not isinstance(at, str) or not at.strip():
+            raise ValueError("provenance event missing required 'at' string")
+        extra = {k: v for k, v in data.items() if k not in ("by", "at")}
+        return cls(by=by, at=at, extra=extra)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a dict representation preserving any extra keys."""
+        out: dict[str, Any] = {"by": self.by, "at": self.at}
+        out.update(self.extra)
+        return out
 
 
 def _is_valid_iso_date(value: str) -> bool:
@@ -289,11 +376,64 @@ class Concept:
         return value if isinstance(value, str) and value else None
 
     @property
-    def sources(self) -> list[str]:
+    def sources(self) -> list[str | dict[str, Any]]:
         value = self.meta.get("sources")
         if not isinstance(value, list):
             return []
-        return [str(item) for item in value]
+        result: list[str | dict[str, Any]] = []
+        for item in value:
+            if isinstance(item, Mapping):
+                res = item.get("resource")
+                if isinstance(res, str) and res.strip():
+                    result.append(dict(item))
+            else:
+                result.append(str(item))
+        return result
+
+    @property
+    def source_records(self) -> list[SourceRecord]:
+        """Return structured v0.3 ``sources`` entries as :class:`SourceRecord` objects."""
+        value = self.meta.get("sources")
+        if not isinstance(value, list):
+            return []
+        records: list[SourceRecord] = []
+        for item in value:
+            if isinstance(item, Mapping):
+                try:
+                    records.append(SourceRecord.from_mapping(item))
+                except ValueError:
+                    continue
+        return records
+
+    @property
+    def generated(self) -> ProvenanceEvent | None:
+        """Return the ``generated`` event if present and valid."""
+        value = self.meta.get("generated")
+        if not isinstance(value, Mapping):
+            return None
+        try:
+            return ProvenanceEvent.from_mapping(value)
+        except ValueError:
+            return None
+
+    @property
+    def verified(self) -> list[ProvenanceEvent]:
+        """Return ``verified`` events (accepting a single bare mapping per §5.2)."""
+        value = self.meta.get("verified")
+        if isinstance(value, Mapping):
+            items: list[Any] = [value]
+        elif isinstance(value, list):
+            items = value
+        else:
+            return []
+        events: list[ProvenanceEvent] = []
+        for item in items:
+            if isinstance(item, Mapping):
+                try:
+                    events.append(ProvenanceEvent.from_mapping(item))
+                except ValueError:
+                    continue
+        return events
 
     @property
     def verified_at(self) -> str | None:
@@ -311,7 +451,9 @@ class Concept:
             "timestamp": self.timestamp,
             "resource": self.resource,
             "basis": self.basis,
+            "generated": self.generated.to_dict() if self.generated else None,
             "sources": self.sources,
+            "verified": [event.to_dict() for event in self.verified],
             "verified_at": self.verified_at,
         }
 
@@ -402,16 +544,43 @@ def validate_meta(meta: dict[str, Any]) -> list[str]:
     sources = meta.get("sources")
     if sources is not None:
         if not isinstance(sources, list):
-            errors.append("sources must be a list of strings")
+            errors.append("sources must be a list of strings or mappings")
         else:
             for item in sources:
-                if not isinstance(item, str):
-                    errors.append("sources items must be strings")
-                    continue
-                try:
-                    parse_source_entry(item)
-                except ValueError as exc:
-                    errors.append(f"invalid source entry: {exc}")
+                if isinstance(item, str):
+                    try:
+                        parse_source_entry(item)
+                    except ValueError as exc:
+                        errors.append(f"invalid source entry: {exc}")
+                elif isinstance(item, Mapping):
+                    try:
+                        SourceRecord.from_mapping(item)
+                    except ValueError as exc:
+                        errors.append(f"invalid source entry: {exc}")
+                else:
+                    errors.append("sources items must be strings or mappings")
+
+    generated = meta.get("generated")
+    if generated is not None:
+        try:
+            ProvenanceEvent.from_mapping(generated)
+        except ValueError as exc:
+            errors.append(f"invalid generated event: {exc}")
+
+    verified = meta.get("verified")
+    if verified is not None:
+        if isinstance(verified, Mapping):
+            verified_items: list[Any] = [verified]
+        elif isinstance(verified, list):
+            verified_items = verified
+        else:
+            errors.append("verified must be a mapping or list of mappings")
+            verified_items = []
+        for item in verified_items:
+            try:
+                ProvenanceEvent.from_mapping(item)
+            except ValueError as exc:
+                errors.append(f"invalid verified event: {exc}")
 
     verified_at = meta.get("verified_at")
     if verified_at is not None:
@@ -577,8 +746,16 @@ def load_concept(path: str | Path, root: str | Path) -> Concept:
                    links=extract_links(body, rel))
 
 
-def iter_concepts(root: str | Path) -> list[Concept]:
-    """Return all concept nodes under ``root``, sorted by relative path."""
+def iter_concepts(
+    root: str | Path,
+    *,
+    errors: list[tuple[str, str]] | None = None,
+) -> list[Concept]:
+    """Return all concept nodes under ``root``, sorted by relative path.
+
+    Files with malformed frontmatter are skipped; if ``errors`` is provided,
+    ``(rel, message)`` pairs are appended to it.
+    """
     root = Path(root)
     concepts: list[Concept] = []
     if not root.exists():
@@ -587,7 +764,11 @@ def iter_concepts(root: str | Path) -> list[Concept]:
         rel = path.relative_to(root).as_posix()
         if is_special(rel):
             continue
-        concepts.append(load_concept(path, root))
+        try:
+            concepts.append(load_concept(path, root))
+        except FrontmatterError as exc:
+            if errors is not None:
+                errors.append((rel, str(exc)))
     return concepts
 
 

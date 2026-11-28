@@ -255,6 +255,61 @@ class TestOkfExport(unittest.TestCase):
                 [f"missing bibliographic title in local cache for paper: {pdf_url}"],
             )
 
+    def test_mixed_format_kb_normalizes_and_dedups_paper_and_patent_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            kb = Path(tmpdir) / "kb-mixed"
+            # Note 1: legacy string sources + patent link
+            self._write_concept(
+                kb,
+                "legacy-note",
+                title="Legacy Note",
+                sources=[
+                    "preprint:arXiv:2406.06484 via=arxiv",
+                    "patent-biblio:EP9999999B1 via=epo-ops",
+                ],
+                body="# Legacy\n\nSee [EP9999999B1](../patents/EP9999999B1.md).\n",
+            )
+            # Note 2: v0.3 entry-form sources for the SAME preprint and SAME patent (biblio + claims) + link
+            c2_dir = kb / "concepts"
+            c2_dir.mkdir(parents=True, exist_ok=True)
+            (c2_dir / "v03-note.md").write_text(
+                "---\n"
+                "type: Concept\n"
+                "title: v0.3 Note\n"
+                "sources:\n"
+                "  - id: arxiv-2406.06484\n"
+                "    resource: https://arxiv.org/abs/2406.06484\n"
+                "    x-okfkb-kind: preprint\n"
+                "    x-okfkb-via: arxiv\n"
+                "  - id: patent-biblio-ep9999999b1\n"
+                "    resource: https://patents.google.com/patent/EP9999999B1\n"
+                "    x-okfkb-kind: patent-biblio\n"
+                "    x-okfkb-via: epo-ops\n"
+                "  - id: patent-claims-ep9999999b1\n"
+                "    resource: https://patents.google.com/patent/EP9999999B1\n"
+                "    x-okfkb-kind: patent-claims\n"
+                "    x-okfkb-via: epo-ops\n"
+                "---\n"
+                "# v0.3\n\nSee [EP9999999B1](../patents/EP9999999B1.md).\n",
+                encoding="utf-8",
+            )
+
+            res = export_kb(kb, cache_dirs=[], format_version=2)
+            by_slug = {c["slug"]: c for c in res["concepts"]}
+
+            self.assertEqual(by_slug["legacy-note"]["paper_ids"], ["arXiv:2406.06484"])
+            self.assertEqual(by_slug["v03-note"]["paper_ids"], ["arXiv:2406.06484"])
+            self.assertEqual(by_slug["legacy-note"]["patent_ids"], ["EP9999999B1"])
+            self.assertEqual(by_slug["v03-note"]["patent_ids"], ["EP9999999B1"])
+
+            # Viewer papers collection has one deduplicated entry in the legacy key space
+            self.assertEqual(len(res["papers"]), 1)
+            self.assertEqual(res["papers"][0]["id"], "arXiv:2406.06484")
+            self.assertEqual(
+                sorted(res["papers"][0]["related_concepts"]),
+                ["legacy-note", "v03-note"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

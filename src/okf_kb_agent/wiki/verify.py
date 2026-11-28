@@ -115,6 +115,7 @@ class VerificationResult:
     checks: VerificationChecks
     evidence: EvidenceRecord
     okf_source: str | None = None
+    okf_source_entry: dict[str, Any] | None = None
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
     snapshot: str | None = None
@@ -142,6 +143,17 @@ class VerificationResult:
         parse_source_entry(source_str)
         return source_str
 
+    def format_okf_source_entry(self) -> dict[str, Any] | None:
+        """Format a v0.3 ``sources`` entry dict if verification succeeded."""
+        source_str = self.okf_source or self.format_okf_source()
+        if not source_str:
+            return None
+        from .convert import convert_source_string
+
+        title = self.metadata.title if self.metadata and self.metadata.title else None
+        entry, _ = convert_source_string(source_str, title=title)
+        return entry
+
     def as_dict(self) -> dict[str, Any]:
         """Convert verification result to dictionary matching the JSON output contract."""
         return {
@@ -160,6 +172,9 @@ class VerificationResult:
             "checks": asdict(self.checks),
             "evidence": asdict(self.evidence),
             "okf_source": self.okf_source or self.format_okf_source(),
+            "okf_source_entry": (
+                self.okf_source_entry or self.format_okf_source_entry()
+            ),
             "warnings": list(self.warnings),
             "error": self.error,
         }
@@ -1011,6 +1026,7 @@ class SourceVerifier:
         )
         if ok:
             res.okf_source = res.format_okf_source()
+            res.okf_source_entry = res.format_okf_source_entry()
         return res
 
     def _doi_fallback(
@@ -1518,6 +1534,7 @@ class SourceVerifier:
         )
         if ok:
             res.okf_source = res.format_okf_source()
+            res.okf_source_entry = res.format_okf_source_entry()
         return res
 
     def verify_url(
@@ -1873,6 +1890,7 @@ class SourceVerifier:
         )
         if ok:
             res.okf_source = res.format_okf_source()
+            res.okf_source_entry = res.format_okf_source_entry()
         return res
 
     @staticmethod

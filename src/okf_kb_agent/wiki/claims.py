@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import random
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .frontmatter import parse_frontmatter
+from .frontmatter import FrontmatterError, parse_frontmatter
 
 __all__ = [
     "ClaimRecord",
@@ -55,7 +56,7 @@ class ClaimRecord:
     section: str | None
     text: str
     numbers: list[str]
-    sources: list[str]
+    sources: list[str | dict[str, Any]]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -64,7 +65,9 @@ class ClaimRecord:
             "section": self.section,
             "text": self.text,
             "numbers": list(self.numbers),
-            "sources": list(self.sources),
+            "sources": [
+                dict(s) if isinstance(s, Mapping) else s for s in self.sources
+            ],
         }
 
 
@@ -77,20 +80,39 @@ class ClaimsResult:
     returned: int
     seed: int
     claims: list[ClaimRecord] = field(default_factory=list)
+    skipped_files: int = 0
+    parse_errors: list[dict[str, str]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "wiki": self.wiki,
             "total_claims": self.total_claims,
             "returned": self.returned,
             "seed": self.seed,
             "claims": [c.to_dict() for c in self.claims],
         }
+        if self.skipped_files:
+            out["skipped_files"] = self.skipped_files
+            out["parse_errors"] = list(self.parse_errors)
+        return out
 
 
-def _normalize_sources(raw_sources: Any) -> list[str]:
+def _normalize_sources(raw_sources: Any) -> list[str | dict[str, Any]]:
     if isinstance(raw_sources, list):
-        return [str(s) for s in raw_sources]
+        out: list[str | dict[str, Any]] = []
+        for s in raw_sources:
+            if isinstance(s, Mapping):
+                res = s.get("resource")
+                if isinstance(res, str) and res.strip():
+                    out.append(dict(s))
+            else:
+                out.append(str(s))
+        return out
+    if isinstance(raw_sources, Mapping):
+        res = raw_sources.get("resource")
+        if isinstance(res, str) and res.strip():
+            return [dict(raw_sources)]
+        return []
     if isinstance(raw_sources, str):
         return [raw_sources]
     return []
@@ -210,12 +232,19 @@ def _iter_body_units(
 def extract_claims_from_note(
     note_path: Path,
     wiki_root: Path,
+    *,
+    errors: list[tuple[str, str]] | None = None,
 ) -> list[ClaimRecord]:
     """Extract all numeric-claim records from a single concept note."""
-    text = note_path.read_text(encoding="utf-8")
-    meta, body = parse_frontmatter(text)
-    sources = _normalize_sources(meta.get("sources"))
     rel_note = note_path.resolve().relative_to(wiki_root.resolve()).as_posix()
+    text = note_path.read_text(encoding="utf-8")
+    try:
+        meta, body = parse_frontmatter(text)
+    except FrontmatterError as exc:
+        if errors is not None:
+            errors.append((rel_note, str(exc)))
+        return []
+    sources = _normalize_sources(meta.get("sources"))
     start_line = _body_start_line(text, body)
 
     claims: list[ClaimRecord] = []
@@ -262,6 +291,7 @@ def extract_claims(
     note_filters = {n.strip() for n in (notes or []) if n and n.strip()}
 
     all_claims: list[ClaimRecord] = []
+    parse_errors: list[tuple[str, str]] = []
     if concepts_dir.is_dir():
         for path in sorted(concepts_dir.glob("*.md")):
             if path.name == "index.md" or not path.is_file():
@@ -269,7 +299,9 @@ def extract_claims(
             rel_note = path.relative_to(root).as_posix()
             if not _matches_note_filter(path, rel_note, note_filters):
                 continue
-            all_claims.extend(extract_claims_from_note(path, root))
+            all_claims.extend(
+                extract_claims_from_note(path, root, errors=parse_errors)
+            )
 
     all_claims.sort(key=lambda c: (c.note, c.line))
     total_claims = len(all_claims)
@@ -287,4 +319,8 @@ def extract_claims(
         returned=len(selected),
         seed=seed,
         claims=selected,
+        skipped_files=len(parse_errors),
+        parse_errors=[
+            {"rel": rel, "error": msg} for rel, msg in parse_errors
+        ],
     )

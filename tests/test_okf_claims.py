@@ -253,6 +253,35 @@ class ClaimsCliAndSkillTests(unittest.TestCase):
         for trigger in ("audit", "promotion gate", "監査", "昇格ゲート"):
             self.assertIn(trigger, audit_spec["triggers"])
 
+    def test_v03_entry_sources_preserved_as_structured_dicts(self):
+        write_note(
+            self.root,
+            "concepts/aln.md",
+            "type: Concept\n"
+            "title: AlN\n"
+            "sources:\n"
+            "  - id: arxiv-2406.06484\n"
+            "    resource: https://arxiv.org/abs/2406.06484\n"
+            "    x-okfkb-kind: preprint\n"
+            '  - "paper:10.1000/legacy"\n',
+            "## Metrics\nThermal conductivity is 285 W/mK.\n",
+        )
+        res = extract_claims(self.root)
+        self.assertEqual(res.total_claims, 1)
+        sources = res.claims[0].sources
+        self.assertEqual(
+            sources,
+            [
+                {
+                    "id": "arxiv-2406.06484",
+                    "resource": "https://arxiv.org/abs/2406.06484",
+                    "x-okfkb-kind": "preprint",
+                },
+                "paper:10.1000/legacy",
+            ],
+        )
+        self.assertEqual(res.to_dict()["claims"][0]["sources"], sources)
+
 
 if __name__ == "__main__":
     unittest.main()

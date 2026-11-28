@@ -54,8 +54,14 @@ class CliTests(unittest.TestCase):
         code, _, _ = self.run_cli("init", self.root, "--skills-dir", skills)
         self.assertEqual(code, 0)
         self.assertTrue((self.root / "index.md").exists())
+        index_text = (self.root / "index.md").read_text("utf-8")
+        from okf_kb_agent.wiki.frontmatter import parse_frontmatter
+        from okf_kb_agent.wiki.model import OKF_FORMAT_VERSION
+        index_meta, _ = parse_frontmatter(index_text)
+        self.assertEqual(index_meta["okf_version"], OKF_FORMAT_VERSION)
         self.assertTrue((self.root / "log.md").exists())
         agents = (self.root / ".agents/AGENTS.md").read_text("utf-8")
+        self.assertIn(f"OKF v{OKF_FORMAT_VERSION}", agents)
         self.assertIn("demo", agents)
         self.assertIn("Demo skill for testing", agents)
         self.assertIn("patent, epo", agents)
