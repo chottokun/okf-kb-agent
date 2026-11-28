@@ -524,7 +524,7 @@ def dispatch_tool(name: str, arguments: dict[str, Any],
         except TypeError:
             hits = backend.search(query, limit=limit)
         hits = attach_link_counts(hits, wiki)
-        return [hit.as_dict() for hit in hits]
+        return _attach_trust_tier(wiki, [hit.as_dict() for hit in hits])
 
     if name == "okf_context":
         from .context import ContextResolver
@@ -544,13 +544,15 @@ def dispatch_tool(name: str, arguments: dict[str, Any],
             return resolver.progressive(
                 query,
                 max_nodes=_bounded_int(arguments, "max_nodes", 5, 1, 50))
-        return resolver.resolve(
+        bundle = resolver.resolve(
             query,
             max_nodes=_bounded_int(arguments, "max_nodes", 5, 1, 50),
             depth=_bounded_int(arguments, "depth", 2, 0, 100),
             token_limit=_bounded_int(
                 arguments, "token_limit", 4000, 1, 100000),
         ).as_dict()
+        _attach_trust_tier(wiki, bundle.get("nodes", []))
+        return bundle
 
     if name == "okf_traverse":
         from .graph import build_graph
@@ -737,6 +739,29 @@ def dispatch_tool(name: str, arguments: dict[str, Any],
         return _ingest_epo(wiki, arguments, root=root_path)
 
     raise ToolError(f"tool is declared but not dispatched: {name}")
+
+
+def _attach_trust_tier(
+    wiki: Path, items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach computed ``trust_tier`` to each item dict with a ``node`` path."""
+    from .frontmatter import FrontmatterError, parse_frontmatter
+    from .model import trust_tier
+
+    for item in items:
+        rel = item.get("node")
+        if not isinstance(rel, str):
+            continue
+        target = wiki / rel
+        tier = "unverified"
+        if target.is_file():
+            try:
+                meta, _ = parse_frontmatter(target.read_text(encoding="utf-8"))
+                tier = trust_tier(meta)
+            except (OSError, FrontmatterError):
+                tier = "unverified"
+        item["trust_tier"] = tier
+    return items
 
 
 def _tool_backend(arguments: dict[str, Any], wiki: Path, *, root: Path):

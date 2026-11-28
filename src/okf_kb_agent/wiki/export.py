@@ -19,6 +19,7 @@ from .model import (
     is_special,
     parse_source_entry,
     resolve_source_genre,
+    trust_tier,
 )
 
 __all__ = [
@@ -509,6 +510,7 @@ def export_kb(
             "basis": fm.get("basis"),
             "sources_count": len(raw_sources),
             "verified_at": fm.get("verified_at"),
+            "trust_tier": trust_tier(fm),
             "links": links,
             "body": body,
         }
