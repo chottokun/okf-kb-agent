@@ -102,10 +102,21 @@ class IngestTests(unittest.TestCase):
         self.assertIn("ep", meta["tags"])
         self.assertEqual(meta["basis"], "external")
         self.assertEqual(meta["sources"], [
-            "patent-biblio:EP9999999B1 via=epo-ops",
-            "patent-claims:EP9999999B1 via=epo-ops",
+            {
+                "id": "patent-biblio-ep9999999b1",
+                "resource": "https://patents.google.com/patent/EP9999999B1",
+                "x-okfkb-kind": "patent-biblio",
+                "x-okfkb-via": "epo-ops",
+            },
+            {
+                "id": "patent-claims-ep9999999b1",
+                "resource": "https://patents.google.com/patent/EP9999999B1",
+                "x-okfkb-kind": "patent-claims",
+                "x-okfkb-via": "epo-ops",
+            },
         ])
-        self.assertEqual(meta["verified_at"], "2026-10-29")
+        self.assertEqual(meta["x-okfkb-verified-at"], "2026-10-29")
+        self.assertNotIn("verified_at", meta)
         self.assertNotIn("source", meta)
         self.assertIn("## Bibliographic", body)
         self.assertIn("EXAMPLE CORP", body)
@@ -126,8 +137,18 @@ class IngestTests(unittest.TestCase):
         self.assertIn("stub", meta["tags"])
         self.assertIn("Family member", meta["description"])
         self.assertEqual(meta["basis"], "external")
-        self.assertEqual(meta["sources"], ["patent-family:EP9999999B1"])
+        self.assertEqual(
+            meta["sources"],
+            [
+                {
+                    "id": "patent-family-ep9999999b1",
+                    "resource": "https://patents.google.com/patent/EP9999999B1",
+                    "x-okfkb-kind": "patent-family",
+                }
+            ],
+        )
         self.assertNotIn("verified_at", meta)
+        self.assertNotIn("x-okfkb-verified-at", meta)
         self.assertNotIn("source", meta)
         self.assertIn("[EP9999999B1](EP9999999B1.md)", body)
         self.assertIn(stub_rel, summary["stubs"])
@@ -156,7 +177,17 @@ class IngestTests(unittest.TestCase):
                                      now=NOW)
         meta, body = self.read("patents/EP9999999B1.md")
         self.assertEqual(meta["type"], "Patent")
-        self.assertEqual(meta["sources"], ["patent-biblio:EP9999999B1 via=epo-ops"])
+        self.assertEqual(
+            meta["sources"],
+            [
+                {
+                    "id": "patent-biblio-ep9999999b1",
+                    "resource": "https://patents.google.com/patent/EP9999999B1",
+                    "x-okfkb-kind": "patent-biblio",
+                    "x-okfkb-via": "epo-ops",
+                }
+            ],
+        )
         self.assertIn("Claims not available", body)
         self.assertTrue(summary["warnings"])
 
@@ -168,7 +199,15 @@ class IngestTests(unittest.TestCase):
                                      eps_client=eps, now=NOW)
         meta, body = self.read("patents/EP9999999B1.md")
         self.assertIn("An EPS claim.", body)
-        self.assertIn("patent-claims:EP9999999B1 via=epo-eps", meta["sources"])
+        self.assertIn(
+            {
+                "id": "patent-claims-ep9999999b1",
+                "resource": "https://patents.google.com/patent/EP9999999B1",
+                "x-okfkb-kind": "patent-claims",
+                "x-okfkb-via": "epo-eps",
+            },
+            meta["sources"],
+        )
         self.assertEqual(summary["claims_source"], "EPO EPS")
         self.assertEqual(summary["claims"], 1)
         self.assertFalse(summary["warnings"])
@@ -268,7 +307,7 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(node_path.stat().st_mtime_ns, fixed_ns)
         meta, _ = self.read("patents/EP9999999B1.md")
         self.assertEqual(meta["timestamp"], NOW)
-        self.assertEqual(meta["verified_at"], "2026-10-29")
+        self.assertEqual(meta["x-okfkb-verified-at"], "2026-10-29")
 
         self.assertEqual(stub_path.read_bytes(), first_stub_bytes)
         self.assertEqual(stub_path.stat().st_mtime_ns, fixed_ns)
@@ -282,7 +321,15 @@ class IngestTests(unittest.TestCase):
         ingest_publication(failing_client, "EP9999999B1", self.root, now=NOW)
         meta_before, body_before = self.read("patents/EP9999999B1.md")
         self.assertEqual(
-            meta_before["sources"], ["patent-biblio:EP9999999B1 via=epo-ops"]
+            meta_before["sources"],
+            [
+                {
+                    "id": "patent-biblio-ep9999999b1",
+                    "resource": "https://patents.google.com/patent/EP9999999B1",
+                    "x-okfkb-kind": "patent-biblio",
+                    "x-okfkb-via": "epo-ops",
+                }
+            ],
         )
         self.assertIn("Claims not available", body_before)
 
@@ -290,9 +337,15 @@ class IngestTests(unittest.TestCase):
         ingest_publication(full_client, "EP9999999B1", self.root, now=LATER)
         meta_after, body_after = self.read("patents/EP9999999B1.md")
         self.assertEqual(meta_after["timestamp"], LATER)
-        self.assertEqual(meta_after["verified_at"], "2026-11-11")
+        self.assertEqual(meta_after["x-okfkb-verified-at"], "2026-11-11")
         self.assertIn(
-            "patent-claims:EP9999999B1 via=epo-ops", meta_after["sources"]
+            {
+                "id": "patent-claims-ep9999999b1",
+                "resource": "https://patents.google.com/patent/EP9999999B1",
+                "x-okfkb-kind": "patent-claims",
+                "x-okfkb-via": "epo-ops",
+            },
+            meta_after["sources"],
         )
         self.assertIn(
             "A composition comprising an amorphous phase.", body_after
@@ -310,8 +363,58 @@ class IngestTests(unittest.TestCase):
         ingest_publication(client, "EP9999999B1", self.root, now=LATER)
         meta, body = self.read("patents/EP9999999B1.md")
         self.assertEqual(meta["timestamp"], LATER)
-        self.assertEqual(meta["verified_at"], "2026-11-11")
+        self.assertEqual(meta["x-okfkb-verified-at"], "2026-11-11")
         self.assertNotIn("Manual trailing note.", body)
+
+    def test_reingestion_preserves_verified_and_advances_generated_on_change(self):
+        from okf_kb_agent.wiki.frontmatter import dump_document
+
+        failing_client = FakeEpo(
+            claims_error=EpoApiError("not available", status=404)
+        )
+        ingest_publication(failing_client, "EP9999999B1", self.root, now=NOW)
+        node_path = self.root / "patents/EP9999999B1.md"
+        meta, body = self.read("patents/EP9999999B1.md")
+        meta["generated"] = {"by": "okf-glm-runner/1", "at": "2026-10-29T12:00:00Z"}
+        meta["verified"] = [{"by": "human:chottokun", "at": "2026-10-30"}]
+        node_path.write_text(dump_document(meta, body), encoding="utf-8")
+        unchanged_bytes = node_path.read_bytes()
+
+        # Unchanged re-ingest leaves generated, verified, and x-okfkb-verified-at untouched
+        ingest_publication(failing_client, "EP9999999B1", self.root, now=LATER)
+        self.assertEqual(node_path.read_bytes(), unchanged_bytes)
+
+        # Substantively changed re-ingest preserves verified & generated.by, advances generated.at & x-okfkb-verified-at
+        ingest_publication(FakeEpo(), "EP9999999B1", self.root, now=LATER)
+        meta_after, body_after = self.read("patents/EP9999999B1.md")
+        self.assertIn("A composition comprising an amorphous phase.", body_after)
+        self.assertEqual(
+            meta_after["generated"],
+            {"by": "okf-glm-runner/1", "at": LATER},
+        )
+        self.assertEqual(
+            meta_after["verified"],
+            [{"by": "human:chottokun", "at": "2026-10-30"}],
+        )
+        self.assertEqual(meta_after["x-okfkb-verified-at"], "2026-11-11")
+
+    def test_reingestion_of_legacy_v02_note_drops_duplicate_verified_at(self):
+        from okf_kb_agent.wiki.frontmatter import dump_document
+
+        failing_client = FakeEpo(
+            claims_error=EpoApiError("not available", status=404)
+        )
+        ingest_publication(failing_client, "EP9999999B1", self.root, now=NOW)
+        node_path = self.root / "patents/EP9999999B1.md"
+        meta, body = self.read("patents/EP9999999B1.md")
+        meta.pop("x-okfkb-verified-at", None)
+        meta["verified_at"] = "2026-10-29"
+        node_path.write_text(dump_document(meta, body), encoding="utf-8")
+
+        ingest_publication(FakeEpo(), "EP9999999B1", self.root, now=LATER)
+        meta_after, _ = self.read("patents/EP9999999B1.md")
+        self.assertNotIn("verified_at", meta_after)
+        self.assertEqual(meta_after["x-okfkb-verified-at"], "2026-11-11")
 
 
 if __name__ == "__main__":

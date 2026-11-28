@@ -462,7 +462,8 @@ def wiki_stats(root: str | Path) -> dict[str, Any]:
     from .model import iter_concepts
     from .search import pattern_for
 
-    concepts = iter_concepts(root)
+    parse_errors: list[tuple[str, str]] = []
+    concepts = iter_concepts(root, errors=parse_errors)
     graph = build_graph(root)
     types = Counter(concept.type or "(none)" for concept in concepts)
     scopes = Counter(concept.scope for concept in concepts)
@@ -479,6 +480,8 @@ def wiki_stats(root: str | Path) -> dict[str, Any]:
         "basis": basis_counts,
         "links": sum(len(targets) for targets in graph.edges.values()),
         "broken_links": len(graph.broken),
+        "skipped_files": len(parse_errors),
+        "parse_errors": [{"rel": rel, "error": msg} for rel, msg in parse_errors],
         "pattern": pattern_for(len(concepts)),
     }
 

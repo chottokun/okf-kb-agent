@@ -1,8 +1,8 @@
 """Minimal, dependency-free YAML frontmatter subset used by OKF documents.
 
-OKF frontmatter is deliberately flat: scalars, inline lists and block lists.
-Keeping the parser small means the wiki stays readable with no third-party
-runtime dependency (Pattern A: ``type`` is the only required field).
+Supports scalars, inline lists, flow/block mappings, and block lists
+(including lists of mappings such as ``sources`` and ``verified``) while
+keeping the parser small and free of third-party runtime dependencies.
 """
 from __future__ import annotations
 
@@ -21,13 +21,21 @@ __all__ = [
 ]
 
 _KEY_RE = re.compile(r"^([A-Za-z0-9_.-]+):(?:[ \t]*(.*))?$")
+_MAPPING_KEY_RE = re.compile(r"^([A-Za-z0-9_.-]+):(?:[ \t]+(.*)|[ \t]*)$")
 _INT_RE = re.compile(r"^[+-]?\d+$")
 _FLOAT_RE = re.compile(r"^[+-]?(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?$")
-_EMPTY = object()
 
 _KEY_ORDER = (
-    "type", "title", "description", "resource", "tags", "timestamp",
-    "scope", "publication", "basis", "sources", "verified_at",
+    "type", "okf_version", "title", "description", "license", "resource",
+    "tags", "timestamp", "scope", "publication", "basis", "generated",
+    "sources", "verified", "verified_at", "x-okfkb-verified-at",
+)
+
+_NESTED_KEY_ORDER = (
+    "id", "resource", "title", "author", "usage_count", "last_modified",
+    "x-okfkb-kind", "x-okfkb-issued", "x-okfkb-retrieved",
+    "x-okfkb-via", "x-okfkb-snapshot", "x-okfkb-genre", "x-okfkb-raw",
+    "by", "at",
 )
 
 
@@ -39,8 +47,8 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     """Split ``text`` into ``(metadata, body)``.
 
     The document must start with a ``---`` line and close it with ``---`` or
-    ``...``. Values are flat YAML scalars/lists; nested mappings are rejected
-    with :class:`FrontmatterError` rather than silently mis-parsed.
+    ``...``. Supports scalars, inline lists, flow/block mappings, and block
+    lists (including lists of mappings).
     """
     if not isinstance(text, str):
         raise FrontmatterError("document must be text")
@@ -57,54 +65,30 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if end is None:
         raise FrontmatterError("unclosed YAML frontmatter")
 
-    meta: dict[str, Any] = {}
-    pending_key: str | None = None
-
+    entries: list[tuple[int, str]] = []
     for raw in lines[1:end]:
         line = raw.rstrip("\r\n")
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
+        indent = len(line) - len(line.lstrip(" "))
+        if line[indent:indent + 1] == "\t":
+            raise FrontmatterError(
+                "tabs are not supported for indentation in OKF frontmatter")
+        entries.append((indent, line[indent:]))
 
-        if line[:1] in (" ", "\t"):
-            if pending_key is None:
-                raise FrontmatterError(
-                    f"indented value without a key: {stripped!r}")
-            if not stripped.startswith("- "):
-                raise FrontmatterError(
-                    "nested mappings are not supported in OKF frontmatter")
-            if meta[pending_key] is _EMPTY:
-                meta[pending_key] = []
-            meta[pending_key].append(_parse_scalar(stripped[2:].strip()))
-            continue
-
-        if pending_key is not None:
-            if meta[pending_key] is _EMPTY:
-                meta[pending_key] = None
-            pending_key = None
-
-        match = _KEY_RE.match(line)
-        if not match:
-            raise FrontmatterError(f"invalid frontmatter line: {line!r}")
-        key = match.group(1)
-        if key in meta:
-            raise FrontmatterError(f"duplicate frontmatter key: {key}")
-        value = (match.group(2) or "").strip()
-        if value == "":
-            meta[key] = _EMPTY
-            pending_key = key
-        else:
-            meta[key] = _parse_value(value)
-
-    if pending_key is not None and meta[pending_key] is _EMPTY:
-        meta[pending_key] = None
-    # ``_EMPTY`` cannot survive the loop above, but keep the invariant explicit.
-    for key, value in list(meta.items()):
-        if value is _EMPTY:
-            meta[key] = None
+    meta: dict[str, Any] = {}
+    if entries:
+        if entries[0][0] != 0:
+            raise FrontmatterError(
+                f"indented value without a key: {entries[0][1]!r}")
+        meta, idx = _parse_block_mapping(entries, 0, 0)
+        if idx < len(entries):
+            raise FrontmatterError(
+                f"unexpected frontmatter line: {entries[idx][1]!r}")
 
     body = "".join(lines[end + 1:])
-    return dict(meta), body
+    return meta, body
 
 
 def dump_document(meta: Mapping[str, Any], body: str = "") -> str:
@@ -117,17 +101,110 @@ def dump_frontmatter(meta: Mapping[str, Any]) -> str:
     if not isinstance(meta, Mapping):
         raise FrontmatterError("metadata must be a mapping")
     lines = ["---"]
-    keys = [key for key in _KEY_ORDER if key in meta]
-    keys += sorted(key for key in meta if key not in _KEY_ORDER)
-    for key in keys:
-        if not _KEY_RE.match(f"{key}:"):
-            raise FrontmatterError(f"invalid frontmatter key: {key!r}")
-        lines.append(f"{key}: {_format_value(meta[key])}")
+    lines.extend(_dump_mapping(meta, 0, _KEY_ORDER))
     lines.append("---")
     return "\n".join(lines) + "\n"
 
 
 # -- parsing helpers --------------------------------------------------------
+
+def _is_list_item(content: str) -> bool:
+    return content == "-" or content.startswith("- ")
+
+
+def _parse_indented_or_none(
+    entries: list[tuple[int, str]],
+    idx: int,
+    parent_indent: int,
+) -> tuple[Any, int]:
+    if idx < len(entries) and entries[idx][0] > parent_indent:
+        next_indent, next_content = entries[idx]
+        if _is_list_item(next_content):
+            return _parse_block_list(entries, idx, next_indent)
+        return _parse_block_mapping(entries, idx, next_indent)
+    return None, idx
+
+
+def _parse_block_mapping(
+    entries: list[tuple[int, str]],
+    idx: int,
+    expected_indent: int,
+    initial: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], int]:
+    mapping: dict[str, Any] = initial if initial is not None else {}
+    while idx < len(entries):
+        indent, content = entries[idx]
+        if indent < expected_indent:
+            break
+        if indent > expected_indent:
+            raise FrontmatterError(f"unexpected indentation: {content!r}")
+        if _is_list_item(content):
+            raise FrontmatterError(
+                f"unexpected list item in mapping: {content!r}")
+        match = _KEY_RE.match(content)
+        if not match:
+            raise FrontmatterError(f"invalid frontmatter line: {content!r}")
+        key = match.group(1)
+        if key in mapping:
+            raise FrontmatterError(f"duplicate frontmatter key: {key}")
+        raw_val = _strip_comment(match.group(2) or "").strip()
+        if raw_val == "":
+            mapping[key], idx = _parse_indented_or_none(
+                entries, idx + 1, expected_indent)
+        else:
+            mapping[key] = _parse_value(raw_val)
+            idx += 1
+    return mapping, idx
+
+
+def _parse_block_list(
+    entries: list[tuple[int, str]],
+    idx: int,
+    expected_indent: int,
+) -> tuple[list[Any], int]:
+    items: list[Any] = []
+    while idx < len(entries):
+        indent, content = entries[idx]
+        if indent < expected_indent:
+            break
+        if indent > expected_indent:
+            raise FrontmatterError(f"unexpected indentation: {content!r}")
+        if not _is_list_item(content):
+            raise FrontmatterError(f"expected list item, got: {content!r}")
+
+        after_dash = content[1:]
+        rest = after_dash.lstrip(" ")
+        if _strip_comment(rest).strip() == "":
+            item, idx = _parse_indented_or_none(
+                entries, idx + 1, expected_indent)
+            items.append(item)
+            continue
+
+        match = _MAPPING_KEY_RE.match(rest)
+        if match:
+            key = match.group(1)
+            raw_val = _strip_comment(match.group(2) or "").strip()
+            item_indent = indent + 1 + (len(after_dash) - len(rest))
+            item_map: dict[str, Any] = {}
+            if raw_val == "":
+                item_map[key], idx = _parse_indented_or_none(
+                    entries, idx + 1, item_indent)
+            else:
+                item_map[key] = _parse_value(raw_val)
+                idx += 1
+            if (
+                idx < len(entries)
+                and entries[idx][0] == item_indent
+                and not _is_list_item(entries[idx][1])
+            ):
+                _, idx = _parse_block_mapping(
+                    entries, idx, item_indent, initial=item_map)
+            items.append(item_map)
+        else:
+            items.append(_parse_value(rest))
+            idx += 1
+    return items, idx
+
 
 def _parse_value(value: str) -> Any:
     value = _strip_comment(value).strip()
@@ -135,8 +212,54 @@ def _parse_value(value: str) -> Any:
         inner = value[1:-1].strip()
         if not inner:
             return []
-        return [_parse_scalar(part.strip()) for part in _split_inline(inner)]
+        return [_parse_value(part.strip()) for part in _split_inline(inner)]
+    if value.startswith("{") and value.endswith("}"):
+        return _parse_flow_mapping(value[1:-1].strip())
     return _parse_scalar(value)
+
+
+def _parse_flow_mapping(inner: str) -> dict[str, Any]:
+    if not inner:
+        return {}
+    result: dict[str, Any] = {}
+    for part in _split_inline(inner):
+        entry = part.strip()
+        if not entry:
+            raise FrontmatterError(f"empty flow mapping entry in {{{inner}}}")
+        colon = _find_unquoted_colon(entry)
+        if colon < 0:
+            raise FrontmatterError(f"invalid flow mapping entry: {entry!r}")
+        raw_key = entry[:colon].strip()
+        raw_val = entry[colon + 1:].strip()
+        key = str(_parse_scalar(raw_key)) if raw_key[:1] in ('"', "'") else raw_key
+        if not _KEY_RE.match(f"{key}:"):
+            raise FrontmatterError(f"invalid frontmatter key: {key!r}")
+        if key in result:
+            raise FrontmatterError(f"duplicate frontmatter key: {key}")
+        result[key] = _parse_value(raw_val) if raw_val else None
+    return result
+
+
+def _find_unquoted_colon(text: str) -> int:
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote == '"':
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in ('"', "'"):
+            quote = char
+            continue
+        if char == ":":
+            return index
+    return -1
 
 
 def _strip_comment(value: str) -> str:
@@ -166,6 +289,7 @@ def _split_inline(inner: str) -> list[str]:
     current: list[str] = []
     quote: str | None = None
     escaped = False
+    depth = 0
     for char in inner:
         if escaped:
             current.append(char)
@@ -184,7 +308,11 @@ def _split_inline(inner: str) -> list[str]:
             quote = char
             current.append(char)
             continue
-        if char == ",":
+        if char in ("[", "{"):
+            depth += 1
+        elif char in ("]", "}") and depth > 0:
+            depth -= 1
+        elif char == "," and depth == 0:
             parts.append("".join(current))
             current = []
             continue
@@ -220,6 +348,70 @@ def _parse_scalar(value: str) -> Any:
 
 
 # -- dumping helpers --------------------------------------------------------
+
+def _ordered_keys(
+    mapping: Mapping[str, Any],
+    order: tuple[str, ...],
+) -> list[str]:
+    keys = [key for key in order if key in mapping]
+    keys += sorted(key for key in mapping if key not in order)
+    for key in keys:
+        if not isinstance(key, str) or not _KEY_RE.match(f"{key}:"):
+            raise FrontmatterError(f"invalid frontmatter key: {key!r}")
+    return keys
+
+
+def _is_scalar_sequence(value: Any) -> bool:
+    return isinstance(value, (list, tuple)) and all(
+        item is None or isinstance(item, (bool, int, float, str))
+        for item in value
+    )
+
+
+def _dump_mapping(
+    mapping: Mapping[str, Any],
+    indent: int,
+    order: tuple[str, ...],
+) -> list[str]:
+    prefix = " " * indent
+    lines: list[str] = []
+    for key in _ordered_keys(mapping, order):
+        val = mapping[key]
+        if isinstance(val, Mapping):
+            if not val:
+                lines.append(f"{prefix}{key}: {{}}")
+            else:
+                lines.append(f"{prefix}{key}:")
+                lines.extend(_dump_mapping(val, indent + 2, _NESTED_KEY_ORDER))
+        elif isinstance(val, (list, tuple)) and not _is_scalar_sequence(val):
+            lines.append(f"{prefix}{key}:")
+            lines.extend(_dump_block_list(val, indent + 2))
+        else:
+            lines.append(f"{prefix}{key}: {_format_value(val)}")
+    return lines
+
+
+def _dump_block_list(
+    items: list[Any] | tuple[Any, ...],
+    indent: int,
+) -> list[str]:
+    prefix = " " * indent
+    lines: list[str] = []
+    for item in items:
+        if isinstance(item, Mapping):
+            if not item:
+                lines.append(f"{prefix}- {{}}")
+            else:
+                item_lines = _dump_mapping(item, indent + 2, _NESTED_KEY_ORDER)
+                lines.append(f"{prefix}- {item_lines[0][indent + 2:]}")
+                lines.extend(item_lines[1:])
+        elif isinstance(item, (list, tuple)) and not _is_scalar_sequence(item):
+            lines.append(f"{prefix}-")
+            lines.extend(_dump_block_list(item, indent + 2))
+        else:
+            lines.append(f"{prefix}- {_format_value(item)}")
+    return lines
+
 
 def _format_value(value: Any) -> str:
     if value is None:

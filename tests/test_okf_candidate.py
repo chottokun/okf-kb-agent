@@ -509,6 +509,38 @@ class CandidateCoreTests(unittest.TestCase):
         self.assertIn("verbatim: parse-failed", out)
         self.assertIn("verbatim: taxonomy-gap", out)
 
+    def test_candidate_check_works_unchanged_with_v03_entry_sources(self):
+        """load_concept and candidate-check succeed on notes using v0.3 entry-form sources."""
+        c_path = self.root / "concepts" / "spray-cooling.md"
+        c_path.parent.mkdir(parents=True, exist_ok=True)
+        c_path.write_text(
+            "---\n"
+            "type: Concept\n"
+            "title: Spray Cooling\n"
+            "tags: [spray-cooling, cooling]\n"
+            "sources:\n"
+            "  - id: arxiv-2406.06484\n"
+            "    resource: https://arxiv.org/abs/2406.06484\n"
+            "    x-okfkb-kind: preprint\n"
+            "---\n"
+            "# Spray Cooling\n",
+            encoding="utf-8",
+        )
+        (self.root / "synonyms.json").write_text("{}", encoding="utf-8")
+        from okf_kb_agent.wiki.model import load_concept
+        concept = load_concept(c_path, self.root)
+        self.assertEqual(concept.sources[0]["id"], "arxiv-2406.06484")
+
+        checker = CandidateChecker(self.root)
+        result = checker.check_candidates(["spray-cooling", "new-candidate"])
+        self.assertEqual(len(result.candidates), 2)
+        self.assertEqual(result.candidates[0].slug, "spray-cooling")
+        self.assertEqual(
+            result.candidates[0].relations.name_occupied,
+            {"matched_name": "spray-cooling", "file": "concepts/spray-cooling.md"},
+        )
+        self.assertEqual(checker.check_inputs_status()["unparsed_concept_files"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

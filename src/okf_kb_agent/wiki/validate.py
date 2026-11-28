@@ -4,8 +4,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ from .model import (
     KNOWN_SOURCE_KINDS,
     NEWS_SOURCE_KINDS,
     SOURCE_ATTR_KEYS,
+    SUPPORTED_OKF_VERSIONS,
     SourceEntry,
     WEB_SOURCE_KINDS,
     _ANY_HEADING_RE,
@@ -41,6 +43,133 @@ __all__ = [
 ]
 
 STRICT_PROVENANCE_RULES = frozenset({"P2", "P4", "P5", "E1", "P9"})
+
+_ARXIV_RESOURCE_RE = re.compile(
+    r"^https?://arxiv\.org/(?:abs|pdf)/([^\s/?#]+?)(?:\.pdf)?(?:[?#].*)?$",
+    re.IGNORECASE,
+)
+_DOI_RESOURCE_RE = re.compile(
+    r"^https?://(?:dx\.)?doi\.org/(.+)$",
+    re.IGNORECASE,
+)
+_PATENT_RESOURCE_RE = re.compile(
+    r"^https?://patents\.google\.com/patent/([^/?#]+)",
+    re.IGNORECASE,
+)
+
+
+def _infer_kind_from_resource(resource: str, item: Mapping[str, Any]) -> str:
+    if "x-okfkb-snapshot" in item and not resource.startswith(("http://", "https://")):
+        return "ops-record"
+    if _ARXIV_RESOURCE_RE.match(resource):
+        return "preprint"
+    if _DOI_RESOURCE_RE.match(resource):
+        return "paper"
+    if _PATENT_RESOURCE_RE.match(resource):
+        return "patent-biblio"
+    if resource.startswith(("http://", "https://")):
+        return "web"
+    return "ops-record"
+
+
+def _coerce_source_entry(item: Any) -> SourceEntry | None:
+    """Convert a legacy string or v0.3 mapping source into a :class:`SourceEntry`."""
+    if isinstance(item, str):
+        try:
+            return parse_source_entry(item)
+        except ValueError:
+            return None
+    if not isinstance(item, Mapping):
+        return None
+    resource = item.get("resource")
+    if not isinstance(resource, str) or not resource.strip():
+        return None
+    res = resource.strip()
+    raw_kind = item.get("x-okfkb-kind")
+    kind = (
+        raw_kind.strip()
+        if isinstance(raw_kind, str) and raw_kind.strip()
+        else _infer_kind_from_resource(res, item)
+    )
+    attrs: dict[str, str] = {}
+    for key in SOURCE_ATTR_KEYS:
+        ext_key = f"x-okfkb-{key}"
+        if ext_key in item and isinstance(item[ext_key], str):
+            val = item[ext_key].strip()
+            if key == "snapshot" or val:
+                attrs[key] = val
+    return SourceEntry(kind=kind, id=res, attrs=attrs, raw=res)
+
+
+def _p4_keys_for_source(item: Any, parsed_entry: SourceEntry | None) -> set[str]:
+    """Collect body-matching identifiers for a legacy or v0.3 source item."""
+    keys: set[str] = set()
+    if isinstance(item, str):
+        if parsed_entry and parsed_entry.id:
+            keys.add(parsed_entry.id)
+        return keys
+    if isinstance(item, Mapping):
+        entry_id = item.get("id")
+        if isinstance(entry_id, str) and entry_id.strip():
+            keys.add(entry_id.strip())
+        resource = item.get("resource")
+        if isinstance(resource, str) and resource.strip():
+            res = resource.strip()
+            keys.add(res)
+            for pattern in (_ARXIV_RESOURCE_RE, _DOI_RESOURCE_RE, _PATENT_RESOURCE_RE):
+                match = pattern.match(res)
+                if match:
+                    keys.add(match.group(1))
+                    break
+    return keys
+
+
+def _parse_event_date(value: Any) -> date | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    cleaned = value.strip()
+    if _is_valid_iso_date(cleaned):
+        try:
+            return date.fromisoformat(cleaned)
+        except ValueError:
+            return None
+    try:
+        return datetime.fromisoformat(cleaned.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+
+
+def _extract_verification(meta: Mapping[str, Any]) -> tuple[bool, date | None]:
+    """Return ``(has_verification, latest_verified_date)`` across v0.3 & legacy keys."""
+    dates: list[date] = []
+    verified_raw = meta.get("verified")
+    has_verified_event = False
+    if isinstance(verified_raw, Mapping):
+        verified_items: list[Any] = [verified_raw]
+    elif isinstance(verified_raw, list):
+        verified_items = verified_raw
+    else:
+        verified_items = []
+    for item in verified_items:
+        if not isinstance(item, Mapping):
+            continue
+        by = item.get("by")
+        parsed_at = _parse_event_date(item.get("at"))
+        if isinstance(by, str) and by.strip() and parsed_at is not None:
+            has_verified_event = True
+            dates.append(parsed_at)
+
+    x_verified_at = meta.get("x-okfkb-verified-at")
+    verified_at = meta.get("verified_at")
+    has_legacy_date = False
+    for raw_date in (x_verified_at, verified_at):
+        parsed_d = _parse_event_date(raw_date)
+        if parsed_d is not None:
+            has_legacy_date = True
+            dates.append(parsed_d)
+
+    has_verification = has_verified_event or has_legacy_date
+    return has_verification, (max(dates) if dates else None)
 
 _UNVERIFIED_ALERT_START_RE = re.compile(
     r"^>\s*\[!NOTE\]\s*(?:一般知識（未検証）|General Knowledge \(Unverified\))\s*$",
@@ -358,21 +487,14 @@ def validate_provenance(
         basis = meta.get("basis")
         raw_sources = meta.get("sources")
         valid_sources: list[SourceEntry] = []
+        source_ids: set[str] = set()
         if isinstance(raw_sources, list):
             for s in raw_sources:
-                if isinstance(s, str):
-                    try:
-                        valid_sources.append(parse_source_entry(s))
-                    except ValueError:
-                        pass
-        source_ids = {entry.id for entry in valid_sources if entry.id}
-        verified_at = meta.get("verified_at")
-        verified_date: date | None = None
-        if isinstance(verified_at, str) and _is_valid_iso_date(verified_at):
-            try:
-                verified_date = date.fromisoformat(verified_at)
-            except ValueError:
-                pass
+                coerced = _coerce_source_entry(s)
+                if coerced is not None:
+                    valid_sources.append(coerced)
+                source_ids.update(_p4_keys_for_source(s, coerced))
+        has_verification, verified_date = _extract_verification(meta)
 
         # P1
         if not stub and basis is None:
@@ -390,7 +512,7 @@ def validate_provenance(
                 )
 
         # P3
-        if not stub and basis == "external" and verified_at is None:
+        if not stub and basis == "external" and not has_verification:
             warnings.append(("P3", f"{rel}: [P3] basis=external without verified_at"))
 
         # P4
@@ -521,11 +643,8 @@ def validate_evidence(
         if not isinstance(raw_sources, list):
             continue
         for s in raw_sources:
-            if not isinstance(s, str):
-                continue
-            try:
-                src_entry = parse_source_entry(s)
-            except ValueError:
+            src_entry = _coerce_source_entry(s)
+            if src_entry is None:
                 continue
 
             if src_entry.kind in ("ops-record", "local-file") or "snapshot" in src_entry.attrs:
@@ -653,6 +772,14 @@ def validate_evidence(
                         })
                 continue
 
+            if src_entry.kind.startswith("patent-") and "snapshot" not in src_entry.attrs:
+                continue
+            if (
+                src_entry.kind == "paper"
+                and _DOI_RESOURCE_RE.match(src_entry.id)
+                and "snapshot" not in src_entry.attrs
+            ):
+                continue
             try:
                 classified = classify_target(src_entry.id, kind=src_entry.kind)
             except ValueError:
@@ -918,10 +1045,30 @@ def validate_wiki(
 ) -> ValidationReport:
     root = Path(root)
     report = ValidationReport()
-    if not (root / "index.md").exists():
+    root_index = root / "index.md"
+    if not root_index.exists():
         report.warnings.append(
             "missing index.md (run `okf index` to generate progressive indexes)"
         )
+    else:
+        index_text = root_index.read_text(encoding="utf-8")
+        index_lines = index_text.lstrip("\ufeff").splitlines()
+        if index_lines and index_lines[0].strip() == "---":
+            try:
+                index_meta, _ = parse_frontmatter(index_text)
+            except FrontmatterError as exc:
+                report.errors.append(f"index.md: {exc}")
+            else:
+                ver = index_meta.get("okf_version")
+                if ver is None:
+                    report.errors.append(
+                        "index.md: missing required field: okf_version"
+                    )
+                elif not isinstance(ver, str) or ver not in SUPPORTED_OKF_VERSIONS:
+                    report.errors.append(
+                        f"index.md: unsupported okf_version {ver!r} "
+                        f"(expected one of {SUPPORTED_OKF_VERSIONS})"
+                    )
 
     parsed: dict[str, tuple[dict[str, Any], str, list[Any]]] = {}
     if not root.exists():

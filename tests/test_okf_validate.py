@@ -1367,6 +1367,165 @@ class TestEvidenceValidation(unittest.TestCase):
                 evidence_dir=Path(self.tmp.name) / "nonexistent_dir",
             )
 
+    def test_v03_entry_sources_and_verified_pass_provenance_and_p4(self):
+        write(self.root, "index.md", (
+            "---\n"
+            'okf_version: "0.3"\n'
+            "title: Test KB\n"
+            "---\n"
+            "# Knowledge Index\n"
+        ))
+        write(self.root, "concepts/aln.md", node(
+            "type: Concept\n"
+            "title: AlN\n"
+            "basis: mixed\n"
+            "sources:\n"
+            "  - id: arxiv-2406.06484\n"
+            "    resource: https://arxiv.org/abs/2406.06484\n"
+            "    x-okfkb-kind: preprint\n"
+            "  - id: patent-biblio-cn122275376a\n"
+            "    resource: https://patents.google.com/patent/CN122275376A\n"
+            "    x-okfkb-kind: patent-biblio\n"
+            "  - id: doi-10.1109-icept.2005.1564720\n"
+            "    resource: https://doi.org/10.1109/icept.2005.1564720\n"
+            "    x-okfkb-kind: paper\n"
+            "verified:\n"
+            "  - by: process:okf-morning-audit\n"
+            '    at: "2026-11-28"\n',
+            "# AlN\n\n"
+            "## 出典に基づく整理\n"
+            "- Thermal conductivity reported in 2406.06484.\n"
+            "- Patent CN122275376A describes sintering.\n"
+            "- Measurements in 10.1109/icept.2005.1564720.\n",
+        ))
+        report = validate_wiki(
+            self.root,
+            check_orphans=False,
+            strict_provenance=True,
+        )
+        self.assertTrue(report.ok, msg=f"errors={report.errors}, warnings={report.warnings}")
+
+    def test_v03_p3_p6_p7_p8_and_verified_fallbacks(self):
+        # P3 accepts verified, x-okfkb-verified-at, and legacy verified_at
+        for idx, trust_line in enumerate([
+            'verified:\n  - by: process:okf-morning-audit\n    at: "2026-11-28"\n',
+            'x-okfkb-verified-at: "2026-11-26"\n',
+            'verified_at: "2026-11-26"\n',
+        ]):
+            write(self.root, f"concepts/ext_{idx}.md", node(
+                "type: Concept\n"
+                "basis: external\n"
+                "sources:\n"
+                "  - id: patent-biblio-ep1\n"
+                "    resource: https://patents.google.com/patent/EP1\n"
+                "    x-okfkb-kind: patent-biblio\n"
+                + trust_line,
+                "# Ext\n",
+            ))
+
+        # P6 & P7 on entry-form sources
+        write(self.root, "concepts/web_bad.md", node(
+            "type: Concept\n"
+            "basis: external\n"
+            "sources:\n"
+            "  - id: web-example\n"
+            "    resource: https://example.com\n"
+            "    x-okfkb-kind: web\n"
+            "  - id: unknown-1\n"
+            "    resource: https://example.com/x\n"
+            "    x-okfkb-kind: mystery-kind\n"
+            'verified_at: "2026-11-26"\n',
+            "# Web Bad\n",
+        ))
+
+        report = validate_wiki(
+            self.root,
+            check_orphans=False,
+            strict_provenance=False,
+        )
+        p3_warnings = [w for w in report.warnings if "[P3]" in w]
+        self.assertEqual(p3_warnings, [])
+        self.assertTrue(any("[P6]" in w and "web_bad.md" in w for w in report.warnings))
+        self.assertTrue(any("[P7]" in w and "mystery-kind" in w for w in report.warnings))
+
+    def test_v03_entry_sources_checked_by_validate_evidence(self):
+        # ops-record with x-okfkb-snapshot missing -> E1
+        write(self.root, "concepts/ops.md", node(
+            "type: Concept\n"
+            "basis: external\n"
+            "sources:\n"
+            "  - id: tools-md\n"
+            "    resource: ~/TOOLS.md#sec\n"
+            "    x-okfkb-kind: ops-record\n"
+            "    x-okfkb-snapshot: missing_snap\n"
+            'verified_at: "2026-11-26"\n',
+            "# Ops\n",
+        ))
+        # web entry -> E1 missing snapshot metadata
+        write(self.root, "concepts/web_ev.md", node(
+            "type: Concept\n"
+            "basis: external\n"
+            "sources:\n"
+            "  - id: web-example\n"
+            "    resource: https://example.com/doc\n"
+            "    x-okfkb-kind: web\n"
+            '    x-okfkb-retrieved: "2026-11-26"\n'
+            'verified_at: "2026-11-26"\n',
+            "# Web Ev\n",
+        ))
+        report = validate_wiki(
+            self.root,
+            check_orphans=False,
+            check_evidence=True,
+            evidence_dir=self.evidence_dir,
+            strict_provenance=True,
+        )
+        self.assertFalse(report.ok)
+        self.assertEqual(report.evidence.missing_count, 2)
+        self.assertTrue(any("[E1]" in e and "ops.md" in e for e in report.errors))
+        self.assertTrue(any("[E1]" in e and "web_ev.md" in e for e in report.errors))
+
+    def test_validate_wiki_checks_root_index_okf_version(self):
+        write(self.root, "concepts/a.md", node("type: Note\n", "# A\n"))
+        write(self.root, "index.md", (
+            "---\n"
+            'okf_version: "9.9"\n'
+            "title: Bad Version\n"
+            "---\n"
+            "# Knowledge Index\n"
+        ))
+        report = validate_wiki(self.root, check_orphans=False)
+        self.assertFalse(report.ok)
+        self.assertTrue(any("index.md" in e and "okf_version" in e for e in report.errors))
+
+    def test_empty_or_malformed_x_okfkb_verified_at_fails_and_triggers_p3(self):
+        write(self.root, "concepts/bad_empty.md", node(
+            "type: Concept\n"
+            "basis: external\n"
+            "sources:\n"
+            "  - id: patent-biblio-ep1\n"
+            "    resource: https://patents.google.com/patent/EP1\n"
+            "    x-okfkb-kind: patent-biblio\n"
+            'x-okfkb-verified-at: ""\n',
+            "# Bad Empty\n",
+        ))
+        write(self.root, "concepts/bad_fmt.md", node(
+            "type: Concept\n"
+            "basis: external\n"
+            "sources:\n"
+            "  - id: patent-biblio-ep2\n"
+            "    resource: https://patents.google.com/patent/EP2\n"
+            "    x-okfkb-kind: patent-biblio\n"
+            'x-okfkb-verified-at: "not-a-date"\n',
+            "# Bad Fmt\n",
+        ))
+        report = validate_wiki(self.root, check_orphans=False)
+        self.assertFalse(report.ok)
+        self.assertTrue(any("bad_empty.md" in e and "x-okfkb-verified-at" in e for e in report.errors))
+        self.assertTrue(any("bad_fmt.md" in e and "x-okfkb-verified-at" in e for e in report.errors))
+        self.assertTrue(any("bad_empty.md" in w and "[P3]" in w for w in report.warnings))
+        self.assertTrue(any("bad_fmt.md" in w and "[P3]" in w for w in report.warnings))
+
 
 if __name__ == "__main__":
     unittest.main()

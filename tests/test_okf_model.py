@@ -19,7 +19,9 @@ from okf_kb_agent.wiki.model import (
     SOURCE_ATTR_KEYS,
     WEB_SOURCE_KINDS,
     Concept,
+    ProvenanceEvent,
     SourceEntry,
+    SourceRecord,
     extract_links,
     extract_sections,
     is_transparent_heading,
@@ -137,9 +139,223 @@ class FrontmatterTests(unittest.TestCase):
                 with self.assertRaises(FrontmatterError):
                     parse_frontmatter(text)
 
-    def test_nested_mapping_is_rejected(self):
-        with self.assertRaises(FrontmatterError):
-            parse_frontmatter("---\ntype: X\nmeta:\n  nested: y\n---\n")
+    def test_parse_nested_mapping_block_and_flow(self):
+        block_meta, _ = parse_frontmatter(
+            "---\n"
+            "type: Concept\n"
+            "meta:\n"
+            "  nested: y\n"
+            "generated:\n"
+            "  by: okf-glm-runner/1\n"
+            '  at: "2026-11-28T00:00:00Z"\n'
+            "---\n"
+        )
+        self.assertEqual(block_meta["meta"], {"nested": "y"})
+        self.assertEqual(
+            block_meta["generated"],
+            {"by": "okf-glm-runner/1", "at": "2026-11-28T00:00:00Z"},
+        )
+
+        flow_meta, _ = parse_frontmatter(
+            "---\n"
+            "type: Concept\n"
+            'generated: {by: "okf-glm-runner/1", at: "2026-11-28T00:00:00Z"}\n'
+            "empty_map: {}\n"
+            "---\n"
+        )
+        self.assertEqual(flow_meta["generated"], block_meta["generated"])
+        self.assertEqual(flow_meta["empty_map"], {})
+
+    def test_parse_block_list_of_mappings(self):
+        meta, _ = parse_frontmatter(
+            "---\n"
+            "type: Concept\n"
+            "sources:\n"
+            "  - id: arxiv-2406.06484\n"
+            "    resource: https://arxiv.org/abs/2406.06484\n"
+            "    x-okfkb-kind: preprint\n"
+            '    x-okfkb-issued: "2024-06-10"\n'
+            "  - id: patent-biblio-cn122275376a\n"
+            "    resource: https://patents.google.com/patent/CN122275376A\n"
+            "    x-okfkb-kind: patent-biblio\n"
+            "verified:\n"
+            "  - by: process:okf-morning-audit\n"
+            '    at: "2026-11-28"\n'
+            '  - {by: "human:chottokun", at: "2026-11-28T09:00:00Z"}\n'
+            "---\n"
+        )
+        self.assertEqual(
+            meta["sources"],
+            [
+                {
+                    "id": "arxiv-2406.06484",
+                    "resource": "https://arxiv.org/abs/2406.06484",
+                    "x-okfkb-kind": "preprint",
+                    "x-okfkb-issued": "2024-06-10",
+                },
+                {
+                    "id": "patent-biblio-cn122275376a",
+                    "resource": "https://patents.google.com/patent/CN122275376A",
+                    "x-okfkb-kind": "patent-biblio",
+                },
+            ],
+        )
+        self.assertEqual(
+            meta["verified"],
+            [
+                {"by": "process:okf-morning-audit", "at": "2026-11-28"},
+                {"by": "human:chottokun", "at": "2026-11-28T09:00:00Z"},
+            ],
+        )
+
+    def test_parse_rejects_malformed_nesting(self):
+        for bad in (
+            "---\n  orphan: value\n---\n",
+            "---\ntype: X\nmeta:\n  a: 1\n  a: 2\n---\n",
+            "---\ntype: X\nsources:\n  - id: a\n  not_a_list_item: b\n---\n",
+        ):
+            with self.subTest(bad=bad):
+                with self.assertRaises(FrontmatterError):
+                    parse_frontmatter(bad)
+
+    def test_dump_frontmatter_orders_v03_keys(self):
+        meta = {
+            "x-okfkb-verified-at": "2026-11-26",
+            "verified": [{"by": "process:okf-morning-audit", "at": "2026-11-28"}],
+            "generated": {"by": "okf-glm-runner/1", "at": "2026-11-28T00:00:00Z"},
+            "license": "Apache-2.0",
+            "okf_version": "0.3",
+            "verified_at": "2026-11-07",
+            "basis": "mixed",
+            "sources": [{"id": "a", "resource": "https://example.com"}],
+            "description": "Desc",
+            "title": "AlN",
+            "type": "Concept",
+        }
+        text = dump_frontmatter(meta)
+        top_keys = [
+            line.split(":", 1)[0]
+            for line in text.splitlines()
+            if line and not line.startswith(" ") and line.strip() not in ("---", "...")
+        ]
+        self.assertEqual(
+            top_keys,
+            [
+                "type",
+                "okf_version",
+                "title",
+                "description",
+                "license",
+                "basis",
+                "generated",
+                "sources",
+                "verified",
+                "verified_at",
+                "x-okfkb-verified-at",
+            ],
+        )
+
+    def test_dump_frontmatter_emits_nested_structures_as_block_yaml(self):
+        meta = {
+            "type": "Concept",
+            "tags": ["a", "b"],
+            "generated": {"at": "2026-11-28T00:00:00Z", "by": "okf-glm-runner/1"},
+            "sources": [
+                {
+                    "x-okfkb-via": "arxiv",
+                    "resource": "https://arxiv.org/abs/2406.06484",
+                    "x-okfkb-kind": "preprint",
+                    "id": "arxiv-2406.06484",
+                }
+            ],
+            "verified": [
+                {"at": "2026-11-28", "by": "process:okf-morning-audit"},
+            ],
+        }
+        expected = (
+            "---\n"
+            "type: Concept\n"
+            "tags: [a, b]\n"
+            "generated:\n"
+            "  by: okf-glm-runner/1\n"
+            '  at: "2026-11-28T00:00:00Z"\n'
+            "sources:\n"
+            "  - id: arxiv-2406.06484\n"
+            "    resource: https://arxiv.org/abs/2406.06484\n"
+            "    x-okfkb-kind: preprint\n"
+            "    x-okfkb-via: arxiv\n"
+            "verified:\n"
+            "  - by: process:okf-morning-audit\n"
+            '    at: "2026-11-28"\n'
+            "---\n"
+        )
+        self.assertEqual(dump_frontmatter(meta), expected)
+
+    def test_roundtrip_v03_representative_documents(self):
+        docs = [
+            (
+                "---\n"
+                'okf_version: "0.3"\n'
+                "title: Thermal KB\n"
+                "description: Semiconductor thermal management\n"
+                "license: Apache-2.0\n"
+                "---\n"
+                "# Thermal KB\n"
+            ),
+            (
+                "---\n"
+                "type: Concept\n"
+                "title: AlN\n"
+                "tags: [ceramic, substrate]\n"
+                'generated: {by: "okf-glm-runner/1", at: "2026-11-28T00:00:00Z"}\n'
+                "sources:\n"
+                "  - id: arxiv-2406.06484\n"
+                "    resource: https://arxiv.org/abs/2406.06484\n"
+                "    x-okfkb-kind: preprint\n"
+                '    x-okfkb-issued: "2024-06-10"\n'
+                "verified:\n"
+                "  - by: process:okf-morning-audit\n"
+                '    at: "2026-11-28"\n'
+                'x-okfkb-verified-at: "2026-11-26"\n'
+                "---\n"
+                "# AlN\n"
+            ),
+            (
+                "---\n"
+                "type: Concept\n"
+                "title: Legacy Note\n"
+                "sources:\n"
+                '  - "preprint:arXiv:2406.06484 issued=2024-06-10"\n'
+                "  - web:https://example.com\n"
+                'verified_at: "2026-11-26"\n'
+                "---\n"
+                "Body\n"
+            ),
+        ]
+        for doc in docs:
+            with self.subTest(doc=doc[:40]):
+                parsed, body = parse_frontmatter(doc)
+                dumped = dump_document(parsed, body)
+                reparsed, rebody = parse_frontmatter(dumped)
+                self.assertEqual(reparsed, parsed)
+                self.assertEqual(rebody, body)
+                self.assertEqual(dump_document(reparsed, rebody), dumped)
+
+    def test_dump_preserves_unchanged_scalar_serialization(self):
+        doc = (
+            "---\n"
+            "type: Concept\n"
+            'okf_version: "0.3"\n'
+            "title: Simple Title\n"
+            "license: Apache-2.0\n"
+            "tags: [b, a]\n"
+            'verified_at: "2026-11-26"\n'
+            "active: true\n"
+            "count: 3\n"
+            "---\n"
+        )
+        parsed, _ = parse_frontmatter(doc)
+        self.assertEqual(dump_frontmatter(parsed), doc)
 
     def test_duplicate_key_is_rejected(self):
         with self.assertRaises(FrontmatterError):
@@ -484,6 +700,180 @@ class ConceptTests(unittest.TestCase):
         self.assertIsNone(d_empty["basis"])
         self.assertEqual(d_empty["sources"], [])
         self.assertIsNone(d_empty["verified_at"])
+
+    def test_concept_sources_v03_entries_preserved_verbatim(self):
+        entry1 = {
+            "id": "arxiv-2406.06484",
+            "resource": "https://arxiv.org/abs/2406.06484",
+            "title": "Sample Paper",
+            "x-okfkb-kind": "preprint",
+            "x-okfkb-issued": "2024-06-10",
+            "x-okfkb-custom": "keep-me",
+        }
+        entry2 = {
+            "resource": "https://example.com/spec",
+            "x-custom-flag": True,
+        }
+        target = self.root / "v03.md"
+        write_concept(
+            target,
+            {"type": "Concept", "title": "AlN", "sources": [entry1, entry2]},
+            "# AlN\n",
+        )
+        concept = load_concept(target, self.root)
+        self.assertEqual(concept.sources, [entry1, entry2])
+        self.assertEqual(concept.as_dict()["sources"], [entry1, entry2])
+
+        records = concept.source_records
+        self.assertEqual(len(records), 2)
+        self.assertIsInstance(records[0], SourceRecord)
+        self.assertEqual(records[0].id, "arxiv-2406.06484")
+        self.assertEqual(records[0].resource, "https://arxiv.org/abs/2406.06484")
+        self.assertEqual(records[0].title, "Sample Paper")
+        self.assertEqual(
+            records[0].extensions,
+            {
+                "x-okfkb-kind": "preprint",
+                "x-okfkb-issued": "2024-06-10",
+                "x-okfkb-custom": "keep-me",
+            },
+        )
+        self.assertEqual(records[0].to_dict(), entry1)
+        self.assertIsNone(records[1].id)
+        self.assertEqual(records[1].to_dict(), entry2)
+
+    def test_concept_sources_dual_format_and_legacy_unchanged(self):
+        legacy = "patent-biblio:EP1 via=epo-ops"
+        v03 = {
+            "id": "arxiv-2406.06484",
+            "resource": "https://arxiv.org/abs/2406.06484",
+            "x-okfkb-kind": "preprint",
+        }
+        concept = Concept(
+            path=self.root / "mixed.md",
+            rel="mixed.md",
+            meta={"type": "Concept", "sources": [legacy, v03]},
+            body="",
+            links=[],
+        )
+        self.assertEqual(concept.sources, [legacy, v03])
+        self.assertEqual(concept.source_records, [SourceRecord.from_mapping(v03)])
+
+    def test_concept_generated_and_verified_roundtrip(self):
+        meta = {
+            "type": "Concept",
+            "title": "AlN",
+            "generated": {"by": "okf-glm-runner/1", "at": "2026-11-28T00:00:00Z"},
+            "verified": [
+                {"by": "process:okf-morning-audit", "at": "2026-11-28"},
+                {"by": "human:chottokun", "at": "2026-11-28T09:00:00Z"},
+            ],
+        }
+        target = self.root / "trust.md"
+        write_concept(target, meta, "# AlN\n")
+        loaded = load_concept(target, self.root)
+
+        self.assertEqual(
+            loaded.generated,
+            ProvenanceEvent(by="okf-glm-runner/1", at="2026-11-28T00:00:00Z"),
+        )
+        self.assertEqual(
+            loaded.verified,
+            [
+                ProvenanceEvent(by="process:okf-morning-audit", at="2026-11-28"),
+                ProvenanceEvent(by="human:chottokun", at="2026-11-28T09:00:00Z"),
+            ],
+        )
+        d = loaded.as_dict()
+        self.assertEqual(d["generated"], meta["generated"])
+        self.assertEqual(d["verified"], meta["verified"])
+
+    def test_concept_verified_bare_mapping_accepted_as_single_element_list(self):
+        write(
+            self.root,
+            "bare.md",
+            node(
+                "type: Concept\n"
+                "verified: {by: human:chottokun, at: \"2026-11-28\"}\n",
+                "# Bare\n",
+            ),
+        )
+        loaded = load_concept(self.root / "bare.md", self.root)
+        self.assertEqual(
+            loaded.verified,
+            [ProvenanceEvent(by="human:chottokun", at="2026-11-28")],
+        )
+        self.assertEqual(validate_meta(loaded.meta), [])
+
+    def test_validate_meta_v03_sources_generated_and_verified(self):
+        valid = {
+            "type": "Concept",
+            "generated": {"by": "okf-glm-runner/1", "at": "2026-11-28T00:00:00Z"},
+            "sources": [
+                {
+                    "resource": "https://example.com",
+                    "x-okfkb-kind": "web",
+                    "x-okfkb-issued": "2026-11-01",
+                    "x-okfkb-retrieved": "2026-11-28",
+                    "x-okfkb-genre": "web",
+                }
+            ],
+            "verified": [{"by": "process:okf-morning-audit", "at": "2026-11-28"}],
+            "x-okfkb-verified-at": "2026-11-28",
+        }
+        self.assertEqual(validate_meta(valid), [])
+        self.assertTrue(validate_meta({"type": "Concept", "sources": [{"id": "missing-resource"}]}))
+        self.assertTrue(validate_meta({"type": "Concept", "generated": {"by": "only-by"}}))
+        self.assertTrue(validate_meta({"type": "Concept", "verified": ["not-a-mapping"]}))
+        self.assertTrue(validate_meta({
+            "type": "Concept",
+            "sources": [{"resource": "https://example.com", "x-okfkb-issued": "not-a-date"}],
+        }))
+        self.assertTrue(validate_meta({
+            "type": "Concept",
+            "sources": [{"resource": "https://example.com", "x-okfkb-retrieved": "2026-13-40"}],
+        }))
+        self.assertTrue(validate_meta({
+            "type": "Concept",
+            "sources": [{"resource": "https://example.com", "x-okfkb-genre": "blog"}],
+        }))
+        self.assertTrue(validate_meta({
+            "type": "Concept",
+            "x-okfkb-verified-at": "invalid-date",
+        }))
+
+    def test_dump_frontmatter_orders_x_okfkb_source_keys_canonically(self):
+        meta = {
+            "type": "Concept",
+            "sources": [
+                {
+                    "x-okfkb-genre": "paper",
+                    "x-okfkb-via": "arxiv",
+                    "x-okfkb-retrieved": "2026-11-28",
+                    "x-okfkb-snapshot": "snap1",
+                    "x-okfkb-issued": "2024-06-10",
+                    "x-okfkb-kind": "preprint",
+                    "resource": "https://arxiv.org/abs/2406.06484",
+                    "id": "arxiv-2406.06484",
+                }
+            ],
+        }
+        dumped = dump_frontmatter(meta)
+        expected = (
+            "---\n"
+            "type: Concept\n"
+            "sources:\n"
+            "  - id: arxiv-2406.06484\n"
+            "    resource: https://arxiv.org/abs/2406.06484\n"
+            "    x-okfkb-kind: preprint\n"
+            '    x-okfkb-issued: "2024-06-10"\n'
+            '    x-okfkb-retrieved: "2026-11-28"\n'
+            "    x-okfkb-via: arxiv\n"
+            "    x-okfkb-snapshot: snap1\n"
+            "    x-okfkb-genre: paper\n"
+            "---\n"
+        )
+        self.assertEqual(dumped, expected)
 
     def test_extract_links_transparent_headings_keep_parent_heading(self):
         body = (

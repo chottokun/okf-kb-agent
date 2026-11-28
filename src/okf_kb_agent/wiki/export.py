@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import xml.etree.ElementTree as ET
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from .frontmatter import FrontmatterError, parse_frontmatter
 from .model import (
     EXPORT_FORMAT_VERSIONS,
     EXPORT_SCOPES,
+    SOURCE_ATTR_KEYS,
     SourceEntry,
     extract_links,
     is_special,
@@ -33,6 +35,62 @@ _ATOM_NS = {
 }
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _JST = timezone(timedelta(hours=9))
+_ARXIV_RESOURCE_RE = re.compile(
+    r"^https?://arxiv\.org/(?:abs|pdf)/([^\s/?#]+?)(?:\.pdf)?(?:[?#].*)?$",
+    re.IGNORECASE,
+)
+_DOI_RESOURCE_RE = re.compile(
+    r"^https?://(?:dx\.)?doi\.org/(.+)$",
+    re.IGNORECASE,
+)
+_PATENT_RESOURCE_RE = re.compile(
+    r"^https?://patents\.google\.com/patent/([^/?#]+)",
+    re.IGNORECASE,
+)
+
+
+def _source_entry_from_mapping(raw: Mapping[str, Any]) -> SourceEntry:
+    """Convert a v0.3 ``sources`` entry mapping into a legacy-keyed :class:`SourceEntry`."""
+    resource = raw.get("resource")
+    if not isinstance(resource, str) or not resource.strip():
+        raise ValueError("structured source entry missing required 'resource'")
+    res = resource.strip()
+
+    raw_kind = raw.get("x-okfkb-kind")
+    if isinstance(raw_kind, str) and raw_kind.strip():
+        kind = raw_kind.strip()
+    elif _ARXIV_RESOURCE_RE.match(res):
+        kind = "preprint"
+    elif _DOI_RESOURCE_RE.match(res):
+        kind = "paper"
+    elif _PATENT_RESOURCE_RE.match(res):
+        kind = "patent-biblio"
+    elif res.startswith(("http://", "https://")):
+        kind = "web"
+    else:
+        kind = "ops-record"
+
+    m_arx = _ARXIV_RESOURCE_RE.match(res)
+    m_doi = _DOI_RESOURCE_RE.match(res)
+    m_pat = _PATENT_RESOURCE_RE.match(res)
+    if m_arx:
+        legacy_id = f"arXiv:{m_arx.group(1)}"
+    elif m_doi:
+        legacy_id = m_doi.group(1)
+    elif m_pat:
+        legacy_id = m_pat.group(1)
+    else:
+        legacy_id = res
+
+    attrs: dict[str, str] = {}
+    for key in SOURCE_ATTR_KEYS:
+        val = raw.get(f"x-okfkb-{key}")
+        if isinstance(val, str) and val.strip():
+            attrs[key] = val.strip()
+
+    raw_str = raw.get("x-okfkb-raw")
+    raw_repr = raw_str if isinstance(raw_str, str) and raw_str else f"{kind}:{legacy_id}"
+    return SourceEntry(kind=kind, id=legacy_id, attrs=attrs, raw=raw_repr)
 
 
 def _safe_cache_stem(raw_id: str) -> str:
@@ -395,13 +453,21 @@ def export_kb(
         patent_source_ids: list[str] = list(patent_links)
 
         if format_version >= 2:
+            seen_patent_cf = {p_id.casefold() for p_id in patent_source_ids}
             for raw in raw_sources:
-                if not isinstance(raw, str):
-                    continue
-                try:
-                    entry = parse_source_entry(raw)
-                except ValueError as exc:
-                    _add_warning(f"unparseable source in {slug}: {raw!r} ({exc})")
+                if isinstance(raw, str):
+                    try:
+                        entry = parse_source_entry(raw)
+                    except ValueError as exc:
+                        _add_warning(f"unparseable source in {slug}: {raw!r} ({exc})")
+                        continue
+                elif isinstance(raw, Mapping):
+                    try:
+                        entry = _source_entry_from_mapping(raw)
+                    except ValueError as exc:
+                        _add_warning(f"unparseable source in {slug}: {raw!r} ({exc})")
+                        continue
+                else:
                     continue
                 genre = resolve_source_genre(entry)
                 structured_sources.append({
@@ -426,7 +492,8 @@ def export_kb(
                     rel = papers_by_id[entry.id]["related_concepts"]
                     if slug not in rel:
                         rel.append(slug)
-                elif genre == "patent" and entry.id not in patent_source_ids:
+                elif genre == "patent" and entry.id.casefold() not in seen_patent_cf:
+                    seen_patent_cf.add(entry.id.casefold())
                     patent_source_ids.append(entry.id)
 
         if scope == "patents":

@@ -1691,6 +1691,30 @@ class TestVerifyFile(unittest.TestCase):
             self.assertEqual(res_cached.genre, "paper")
             self.assertIn("genre=paper", res_cached.okf_source or "")
 
+    def test_verify_result_includes_dual_okf_source_and_entry(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cache_dir = root / "evidence"
+            note = root / "report.txt"
+            note.write_text("Thermal test report.\n", encoding="utf-8")
+
+            verifier = SourceVerifier(cache_dir=cache_dir)
+            res = verifier.verify_file(note, genre="paper")
+            self.assertTrue(res.ok)
+            self.assertIsInstance(res.okf_source, str)
+            self.assertIsInstance(res.okf_source_entry, dict)
+            self.assertEqual(res.okf_source_entry["resource"], "report.txt")
+            self.assertEqual(res.okf_source_entry["x-okfkb-kind"], "local-file")
+            self.assertEqual(res.okf_source_entry["x-okfkb-genre"], "paper")
+            self.assertEqual(res.okf_source_entry["id"], res.snapshot)
+
+            as_d = res.as_dict()
+            self.assertEqual(as_d["okf_source"], res.okf_source)
+            self.assertEqual(as_d["okf_source_entry"], res.okf_source_entry)
+
 
 if __name__ == "__main__":
     unittest.main()

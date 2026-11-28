@@ -42,7 +42,10 @@ def plan_indexes(root: str | Path, *, max_entries: int = 50) -> dict[str, str]:
         pages.update(_section_pages(section, groups[section], max_entries))
 
     general = groups.get("", [])
-    pages["index.md"] = _root_index(sections, groups, general, max_entries)
+    raw_frontmatter = _extract_raw_frontmatter(root / "index.md")
+    pages["index.md"] = raw_frontmatter + _root_index(
+        sections, groups, general, max_entries
+    )
     if len(general) > max_entries:
         for offset, chunk in enumerate(
                 _chunks(general, max_entries), start=1):
@@ -156,6 +159,21 @@ def _clip(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: max(1, limit - 1)].rstrip() + "…"
+
+
+def _extract_raw_frontmatter(path: Path) -> str:
+    """Return the raw leading YAML frontmatter block of ``path``, or ``""``."""
+    if not path.is_file():
+        return ""
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].lstrip("\ufeff").strip() != "---":
+        return ""
+    for index in range(1, len(lines)):
+        if lines[index].strip() in ("---", "..."):
+            block = "".join(lines[:index + 1])
+            return block if block.endswith("\n") else block + "\n"
+    return ""
 
 
 def _chunks(items: list[Concept], size: int):

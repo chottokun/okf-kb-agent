@@ -203,6 +203,8 @@ class LocalSearchBackend:
         self.root = Path(root)
         self.use_ripgrep = use_ripgrep
         self._vocab: set[str] | None = None
+        self.last_parse_errors: list[tuple[str, str]] = []
+        self.skipped_files: int = 0
 
     def _get_vocab(self) -> set[str]:
         if self._vocab is None:
@@ -245,7 +247,10 @@ class LocalSearchBackend:
             if st and st not in rg_terms:
                 rg_terms.append(st)
         candidates = self._ripgrep_candidates(rg_terms, include_admin=include_admin)
-        concepts = iter_concepts(self.root)
+        parse_errors: list[tuple[str, str]] = []
+        concepts = iter_concepts(self.root, errors=parse_errors)
+        self.last_parse_errors = parse_errors
+        self.skipped_files = len(parse_errors)
 
         if not include_admin:
             concepts = [c for c in concepts if not is_admin_file(c.rel)]

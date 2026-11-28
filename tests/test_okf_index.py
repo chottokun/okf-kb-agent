@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from okf_kb_agent.wiki.index import plan_indexes, write_indexes
+from okf_kb_agent.wiki.index import plan_indexes, stale_indexes, write_indexes
 
 
 def write(root: Path, rel: str, meta: str, body: str = "") -> Path:
@@ -90,6 +90,27 @@ class IndexTests(unittest.TestCase):
             pages = plan_indexes(Path(empty))
             self.assertIn("# Knowledge Index", pages["index.md"])
             self.assertIn("No concepts yet", pages["index.md"])
+
+    def test_root_index_preserves_raw_frontmatter_and_is_not_stale(self):
+        raw_fm = (
+            "---\n"
+            'okf_version: "0.3"\n'
+            "title: Custom Title\n"
+            "license: Apache-2.0\n"
+            "x-custom-order: kept-verbatim\n"
+            "---\n"
+        )
+        (self.root / "index.md").write_text(
+            raw_fm + "# Old Index\n", encoding="utf-8"
+        )
+        planned = plan_indexes(self.root, max_entries=10)
+        self.assertTrue(planned["index.md"].startswith(raw_fm))
+        self.assertIn("# Knowledge Index", planned["index.md"])
+
+        write_indexes(self.root, max_entries=10)
+        written = (self.root / "index.md").read_text(encoding="utf-8")
+        self.assertTrue(written.startswith(raw_fm))
+        self.assertEqual(stale_indexes(self.root, max_entries=10), [])
 
 
 if __name__ == "__main__":
