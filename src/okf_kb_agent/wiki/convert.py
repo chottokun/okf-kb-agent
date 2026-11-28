@@ -50,6 +50,9 @@ class ConversionReport:
     id_collisions: list[dict[str, str]] = field(default_factory=list)
     lossless_errors: list[dict[str, str]] = field(default_factory=list)
     changed_files: list[dict[str, Any]] = field(default_factory=list)
+    tags_normalized: int = 0
+    tag_changes: list[dict[str, Any]] = field(default_factory=list)
+    tag_collisions: list[dict[str, Any]] = field(default_factory=list)
     skipped_files: int = 0
     parse_errors: list[dict[str, str]] = field(default_factory=list)
 
@@ -66,6 +69,9 @@ class ConversionReport:
             "id_collisions": list(self.id_collisions),
             "lossless_errors": list(self.lossless_errors),
             "changed_files": list(self.changed_files),
+            "tags_normalized": self.tags_normalized,
+            "tag_changes": list(self.tag_changes),
+            "tag_collisions": list(self.tag_collisions),
             "skipped_files": self.skipped_files,
             "parse_errors": list(self.parse_errors),
         }
@@ -81,6 +87,8 @@ class ConversionReport:
             f"  sources converted: {self.converted_sources}",
             f"  verified injected: {self.verified_injected}, "
             f"x-okfkb-verified-at fallback: {self.verified_fallback}",
+            f"  tags normalized: {self.tags_normalized}, "
+            f"tag collisions: {len(self.tag_collisions)}",
             f"  raw preserved: {len(self.raw_preserved)}, "
             f"id collisions resolved: {len(self.id_collisions)}, "
             f"lossless errors: {len(self.lossless_errors)}",
@@ -88,7 +96,12 @@ class ConversionReport:
         for item in self.changed_files:
             lines.append(
                 f"  - {item['rel']}: sources={item['sources_converted']}, "
-                f"verified_action={item['verified_action']}"
+                f"verified_action={item['verified_action']}, "
+                f"tags_normalized={item.get('tags_normalized', 0)}"
+            )
+        for item in self.tag_collisions:
+            lines.append(
+                f"  TAG_COLLISION: {item['normalized']} <- {item['originals']}"
             )
         for item in self.raw_preserved:
             lines.append(f"  RAW_PRESERVED: {item['rel']}: {item['raw']!r}")
@@ -390,11 +403,68 @@ def _load_verified_map(
     return out
 
 
+def _normalize_tag(tag: str) -> str:
+    """Normalize colon -> slash and dot -> hyphen, preserving letter case."""
+    return tag.replace(":", "/").replace(".", "-")
+
+
+def _compute_tag_collisions(
+    parsed_notes: list[tuple[Path, str, dict[str, Any], str]],
+) -> tuple[set[str], list[dict[str, Any]]]:
+    """Compute whole-KB normalized tag collisions before rewriting any note."""
+    by_norm: dict[str, set[str]] = {}
+    for _path, _rel, meta, _body in parsed_notes:
+        tags = meta.get("tags")
+        if not isinstance(tags, list):
+            continue
+        for tag in tags:
+            if isinstance(tag, str):
+                by_norm.setdefault(_normalize_tag(tag), set()).add(tag)
+
+    colliding_norms: set[str] = set()
+    collisions: list[dict[str, Any]] = []
+    for norm in sorted(by_norm):
+        originals = sorted(by_norm[norm])
+        if len(originals) > 1:
+            colliding_norms.add(norm)
+            collisions.append({"normalized": norm, "originals": originals})
+    return colliding_norms, collisions
+
+
+def _convert_tags_stage(
+    meta: dict[str, Any],
+    rel: str,
+    colliding_norms: set[str],
+    report: ConversionReport,
+) -> int:
+    """Stage 3 (opt-in): normalize frontmatter ``tags`` skipping collisions."""
+    tags = meta.get("tags")
+    if not isinstance(tags, list):
+        return 0
+    new_tags: list[Any] = []
+    file_changes: list[dict[str, str]] = []
+    for tag in tags:
+        if isinstance(tag, str):
+            norm = _normalize_tag(tag)
+            if norm != tag and norm not in colliding_norms:
+                new_tags.append(norm)
+                file_changes.append({"from": tag, "to": norm})
+                continue
+        new_tags.append(tag)
+    if not file_changes:
+        return 0
+    meta["tags"] = new_tags
+    report.tags_normalized += len(file_changes)
+    report.tag_changes.append({"rel": rel, "changes": file_changes})
+    return len(file_changes)
+
+
 def convert_wiki_v03(
     root: str | Path,
     *,
     write: bool = False,
     verified_map_path: str | Path | None = None,
+    normalize_tags: bool = False,
 ) -> ConversionReport:
     """Convert a wiki directory from v0.2 provenance to v0.3 entries."""
     wiki = Path(root)
@@ -404,6 +474,7 @@ def convert_wiki_v03(
     if not wiki.exists():
         raise FileNotFoundError(f"wiki root does not exist: {wiki}")
 
+    parsed_notes: list[tuple[Path, str, dict[str, Any], str]] = []
     for path in sorted(wiki.rglob("*.md")):
         rel = path.relative_to(wiki).as_posix()
         if is_special(rel):
@@ -416,14 +487,28 @@ def convert_wiki_v03(
             report.skipped_files += 1
             report.parse_errors.append({"rel": rel, "error": str(exc)})
             continue
+        parsed_notes.append((path, rel, meta, body))
 
+    colliding_norms: set[str] = set()
+    if normalize_tags:
+        colliding_norms, collisions = _compute_tag_collisions(parsed_notes)
+        report.tag_collisions.extend(collisions)
+
+    for path, rel, meta, body in parsed_notes:
         new_meta = copy.deepcopy(meta)
         before_sources = report.converted_sources
         sources_changed = _convert_sources_stage(new_meta, rel, report)
         verified_action = _convert_verified_stage(
             new_meta, rel, verified_map, report
         )
-        file_changed = sources_changed or (verified_action != "none")
+        tags_changed = (
+            _convert_tags_stage(new_meta, rel, colliding_norms, report)
+            if normalize_tags
+            else 0
+        )
+        file_changed = (
+            sources_changed or (verified_action != "none") or (tags_changed > 0)
+        )
         if not file_changed:
             continue
 
@@ -432,6 +517,7 @@ def convert_wiki_v03(
             "rel": rel,
             "sources_converted": report.converted_sources - before_sources,
             "verified_action": verified_action,
+            "tags_normalized": tags_changed,
         })
         if write:
             write_concept(path, new_meta, body)

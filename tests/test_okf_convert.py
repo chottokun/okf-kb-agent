@@ -353,5 +353,116 @@ class ConvertWikiIntegrationTests(unittest.TestCase):
         self.assertEqual(second.verified_injected, 0)
 
 
+class ConvertTagNormalizationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "wiki"
+        self.root.mkdir()
+        write(self.root, "index.md", "# Index\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_opt_in_default_leaves_tags_untouched(self):
+        write(
+            self.root,
+            "concepts/a.md",
+            (
+                "---\n"
+                "type: Concept\n"
+                "tags: [strand:agents, DeepSeek-V3.2, plain]\n"
+                "basis: external\n"
+                "---\n"
+                "# A\n"
+            ),
+        )
+        rep = convert_wiki_v03(self.root, write=True)
+        self.assertEqual(rep.tags_normalized, 0)
+        self.assertEqual(rep.files_changed, 0)
+        meta, _ = parse_frontmatter(
+            (self.root / "concepts/a.md").read_text(encoding="utf-8")
+        )
+        self.assertEqual(meta["tags"], ["strand:agents", "DeepSeek-V3.2", "plain"])
+
+    def test_normalize_tags_rules_collision_and_idempotency(self):
+        body_a = "# DeepSeek-V3.2\n\nUses DeepSeek-V3.2 and 2.5D packaging.\n"
+        write(
+            self.root,
+            "concepts/a.md",
+            (
+                "---\n"
+                "type: Concept\n"
+                "tags: [strand:agents, DeepSeek-V3.2, 2.5D, foo.bar, untouched]\n"
+                "basis: external\n"
+                "---\n"
+                + body_a
+            ),
+        )
+        write(
+            self.root,
+            "concepts/b.md",
+            (
+                "---\n"
+                "type: Concept\n"
+                "tags: [foo-bar, strand:inference]\n"
+                "basis: external\n"
+                "---\n"
+                "# B\n"
+            ),
+        )
+
+        # Dry-run reports changes and collisions without modifying files
+        dry = convert_wiki_v03(self.root, write=False, normalize_tags=True)
+        self.assertFalse(dry.written)
+        self.assertEqual(dry.tags_normalized, 4)
+        self.assertEqual(
+            dry.tag_collisions,
+            [{"normalized": "foo-bar", "originals": ["foo-bar", "foo.bar"]}],
+        )
+        meta_a_dry, _ = parse_frontmatter(
+            (self.root / "concepts/a.md").read_text(encoding="utf-8")
+        )
+        self.assertIn("strand:agents", meta_a_dry["tags"])
+
+        # Apply via CLI --normalize-tags --write --json
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = main(["convert-v03", str(self.root), "--normalize-tags", "--write", "--json"])
+        self.assertEqual(rc, 0)
+        applied = json.loads(buf.getvalue())
+        self.assertTrue(applied["written"])
+        self.assertEqual(applied["tags_normalized"], 4)
+        self.assertEqual(
+            applied["tag_collisions"],
+            [{"normalized": "foo-bar", "originals": ["foo-bar", "foo.bar"]}],
+        )
+
+        meta_a, parsed_body_a = parse_frontmatter(
+            (self.root / "concepts/a.md").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            meta_a["tags"],
+            ["strand/agents", "DeepSeek-V3-2", "2-5D", "foo.bar", "untouched"],
+        )
+        self.assertEqual(parsed_body_a, body_a)
+
+        meta_b, _ = parse_frontmatter(
+            (self.root / "concepts/b.md").read_text(encoding="utf-8")
+        )
+        self.assertEqual(meta_b["tags"], ["foo-bar", "strand/inference"])
+
+        # Idempotent second --write run
+        second = convert_wiki_v03(self.root, write=True, normalize_tags=True)
+        self.assertEqual(second.files_changed, 0)
+        self.assertEqual(second.tags_normalized, 0)
+        self.assertEqual(
+            second.tag_collisions,
+            [{"normalized": "foo-bar", "originals": ["foo-bar", "foo.bar"]}],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

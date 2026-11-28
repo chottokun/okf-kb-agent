@@ -505,6 +505,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="exit non-zero if any converted source fails lossless verification",
     )
+    p_conv.add_argument(
+        "--normalize-tags",
+        action="store_true",
+        help="normalize frontmatter tags (: -> /, . -> -) skipping whole-KB collisions",
+    )
     p_conv.add_argument("--json", action="store_true", help="output JSON report")
 
     p_stamp_gen = sub.add_parser(
@@ -1398,6 +1403,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             wiki,
             write=args.write,
             verified_map_path=args.verified_map,
+            normalize_tags=args.normalize_tags,
         )
         if args.json:
             print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
